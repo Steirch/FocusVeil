@@ -6,6 +6,8 @@
     <string>FocusVeil</string>
     <key>CFBundleExecutable</key>
     <string>FocusVeil</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>local.codex.FocusVeil</string>
     <key>CFBundleInfoDictionaryVersion</key>

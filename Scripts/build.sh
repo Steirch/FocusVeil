@@ -35,6 +35,7 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" \
     -o "${MACOS_DIR}/FocusVeil"
 
 install -m 644 "Resources/Info.plist" "${CONTENTS_DIR}/Info.plist"
+install -m 644 "Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 
 xattr -cr "${APP_DIR}"
 codesign --force --deep --sign - "${APP_DIR}"

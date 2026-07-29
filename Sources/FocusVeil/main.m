@@ -1,9 +1,11 @@
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <ServiceManagement/ServiceManagement.h>
+#import <math.h>
 
 static NSString * const FVEnabledKey = @"enabled";
 static NSString * const FVDimmingAmountKey = @"dimmingAmount";
+static NSString * const FVGitHubURLString = @"https://github.com/Steirch/FocusVeil";
 
 static void FVRegisterDefaults(void) {
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
@@ -28,17 +30,6 @@ static CGFloat FVDimmingAmount(void) {
 static void FVSetDimmingAmount(CGFloat amount) {
     amount = MIN(MAX(amount, 0.08), 0.82);
     [[NSUserDefaults standardUserDefaults] setDouble:amount forKey:FVDimmingAmountKey];
-}
-
-static CGRect FVAppKitRectFromQuartzRect(CGRect rect) {
-    NSScreen *primaryScreen = NSScreen.screens.firstObject;
-    CGFloat primaryScreenTop = primaryScreen ? NSMaxY(primaryScreen.frame) : 0;
-    return CGRectMake(
-        CGRectGetMinX(rect),
-        primaryScreenTop - CGRectGetMaxY(rect),
-        CGRectGetWidth(rect),
-        CGRectGetHeight(rect)
-    );
 }
 
 static BOOL FVAccessibilityWindowFrame(pid_t processIdentifier, CGRect *result) {
@@ -107,7 +98,18 @@ static BOOL FVAccessibilityWindowFrame(pid_t processIdentifier, CGRect *result) 
     return YES;
 }
 
-static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
+static BOOL FVRectApproximatelyEqual(CGRect first, CGRect second) {
+    CGFloat tolerance = 12.0;
+    return fabs(CGRectGetMinX(first) - CGRectGetMinX(second)) <= tolerance
+        && fabs(CGRectGetMinY(first) - CGRectGetMinY(second)) <= tolerance
+        && fabs(CGRectGetWidth(first) - CGRectGetWidth(second)) <= tolerance
+        && fabs(CGRectGetHeight(first) - CGRectGetHeight(second)) <= tolerance;
+}
+
+static BOOL FVWindowNumberForProcess(pid_t processIdentifier, CGWindowID *result) {
+    CGRect focusedFrame = CGRectZero;
+    BOOL hasFocusedFrame = FVAccessibilityWindowFrame(processIdentifier, &focusedFrame);
+
     CFArrayRef windowListReference = CGWindowListCopyWindowInfo(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
         kCGNullWindowID
@@ -119,17 +121,24 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
     NSArray<NSDictionary *> *windowList = CFBridgingRelease(windowListReference);
     NSString *ownerKey = (__bridge NSString *)kCGWindowOwnerPID;
     NSString *layerKey = (__bridge NSString *)kCGWindowLayer;
+    NSString *numberKey = (__bridge NSString *)kCGWindowNumber;
     NSString *boundsKey = (__bridge NSString *)kCGWindowBounds;
+    NSString *alphaKey = (__bridge NSString *)kCGWindowAlpha;
+    CGWindowID firstWindowNumber = 0;
 
     for (NSDictionary *window in windowList) {
         NSNumber *owner = window[ownerKey];
         NSNumber *layer = window[layerKey];
+        NSNumber *windowNumber = window[numberKey];
+        NSNumber *alpha = window[alphaKey];
         NSDictionary *bounds = window[boundsKey];
         CGRect frame = CGRectZero;
 
         if (
             owner.intValue == processIdentifier &&
             layer.integerValue == 0 &&
+            windowNumber != nil &&
+            alpha.doubleValue > 0.01 &&
             bounds != nil &&
             CGRectMakeWithDictionaryRepresentation(
                 (__bridge CFDictionaryRef)bounds,
@@ -138,9 +147,19 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
             frame.size.width > 40 &&
             frame.size.height > 40
         ) {
-            *result = frame;
-            return YES;
+            if (firstWindowNumber == 0) {
+                firstWindowNumber = windowNumber.unsignedIntValue;
+            }
+            if (hasFocusedFrame && FVRectApproximatelyEqual(frame, focusedFrame)) {
+                *result = windowNumber.unsignedIntValue;
+                return YES;
+            }
         }
+    }
+
+    if (firstWindowNumber != 0) {
+        *result = firstWindowNumber;
+        return YES;
     }
 
     return NO;
@@ -148,20 +167,14 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
 
 @interface FVDimmingView : NSView
 @property(nonatomic) CGFloat dimmingAmount;
-- (void)setCutout:(CGRect)cutout hasCutout:(BOOL)hasCutout;
 @end
 
-@implementation FVDimmingView {
-    CGRect _cutout;
-    BOOL _hasCutout;
-}
+@implementation FVDimmingView
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
     if (self) {
         _dimmingAmount = 0.42;
-        _cutout = CGRectZero;
-        _hasCutout = NO;
     }
     return self;
 }
@@ -175,28 +188,9 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
     [self setNeedsDisplay:YES];
 }
 
-- (void)setCutout:(CGRect)cutout hasCutout:(BOOL)hasCutout {
-    BOOL changed = _hasCutout != hasCutout
-        || (hasCutout && !CGRectEqualToRect(_cutout, cutout));
-    if (!changed) {
-        return;
-    }
-
-    _cutout = cutout;
-    _hasCutout = hasCutout;
-    [self setNeedsDisplay:YES];
-}
-
 - (void)drawRect:(NSRect)dirtyRect {
     [[NSColor colorWithCalibratedWhite:0 alpha:self.dimmingAmount] setFill];
     NSRectFillUsingOperation(self.bounds, NSCompositingOperationSourceOver);
-
-    if (_hasCutout) {
-        [NSGraphicsContext saveGraphicsState];
-        NSGraphicsContext.currentContext.compositingOperation = NSCompositingOperationClear;
-        NSRectFillUsingOperation(_cutout, NSCompositingOperationClear);
-        [NSGraphicsContext restoreGraphicsState];
-    }
 }
 
 @end
@@ -215,7 +209,7 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
                               screen:screen];
     if (self) {
         [self setFrame:screen.frame display:NO];
-        self.level = NSFloatingWindowLevel;
+        self.level = NSNormalWindowLevel;
         self.backgroundColor = NSColor.clearColor;
         self.opaque = NO;
         self.hasShadow = NO;
@@ -241,10 +235,8 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
 @end
 
 @interface FVOverlay : NSObject
-@property(nonatomic, readonly) CGRect screenFrame;
 - (instancetype)initWithScreen:(NSScreen *)screen dimmingAmount:(CGFloat)amount;
-- (void)showWithGlobalCutout:(CGRect)cutout
-                  hasCutout:(BOOL)hasCutout;
+- (void)showBelowWindowNumber:(CGWindowID)windowNumber;
 - (void)hide;
 - (void)updateDimmingAmount:(CGFloat)amount;
 @end
@@ -268,35 +260,9 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
     return self;
 }
 
-- (CGRect)screenFrame {
-    return _panel.frame;
-}
-
-- (void)showWithGlobalCutout:(CGRect)cutout
-                  hasCutout:(BOOL)hasCutout {
-    CGRect localCutout = CGRectZero;
-    BOOL hasLocalCutout = NO;
-
-    if (hasCutout) {
-        localCutout = CGRectOffset(
-            cutout,
-            -CGRectGetMinX(_panel.frame),
-            -CGRectGetMinY(_panel.frame)
-        );
-        localCutout = CGRectIntersection(localCutout, _dimmingView.bounds);
-        hasLocalCutout = !CGRectIsNull(localCutout) && !CGRectIsEmpty(localCutout);
-    }
-
-    [_dimmingView setCutout:localCutout hasCutout:hasLocalCutout];
-
-    if (!_panel.visible) {
-        _panel.alphaValue = 0;
-        [_panel orderFrontRegardless];
-        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-            context.duration = 0.16;
-            _panel.animator.alphaValue = 1;
-        }];
-    }
+- (void)showBelowWindowNumber:(CGWindowID)windowNumber {
+    _panel.alphaValue = 1;
+    [_panel orderWindow:NSWindowBelow relativeTo:(NSInteger)windowNumber];
 }
 
 - (void)hide {
@@ -304,13 +270,8 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
         return;
     }
 
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        context.duration = 0.12;
-        _panel.animator.alphaValue = 0;
-    } completionHandler:^{
-        [self->_panel orderOut:nil];
-        self->_panel.alphaValue = 1;
-    }];
+    _panel.alphaValue = 1;
+    [_panel orderOut:nil];
 }
 
 - (void)updateDimmingAmount:(CGFloat)amount {
@@ -326,13 +287,12 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
 - (void)stop;
 - (void)setEnabled:(BOOL)enabled;
 - (void)setDimmingAmount:(CGFloat)amount;
-- (BOOL)requestAccessibilityPermission;
 @end
 
 @implementation FVFocusController {
     NSMutableArray<FVOverlay *> *_overlays;
     NSTimer *_refreshTimer;
-    CGRect _lastWindowFrame;
+    CGWindowID _lastWindowNumber;
     BOOL _hasLastWindow;
     pid_t _ownProcessIdentifier;
 }
@@ -342,6 +302,7 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
     if (self) {
         _overlays = [NSMutableArray array];
         _ownProcessIdentifier = NSProcessInfo.processInfo.processIdentifier;
+        _lastWindowNumber = 0;
         _hasLastWindow = NO;
         _paused = NO;
     }
@@ -350,13 +311,6 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
 
 - (BOOL)accessibilityTrusted {
     return AXIsProcessTrusted();
-}
-
-- (BOOL)requestAccessibilityPermission {
-    NSDictionary *options = @{
-        (__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES
-    };
-    return AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
 }
 
 - (void)start {
@@ -432,22 +386,12 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
         frontmostApplication &&
         frontmostApplication.processIdentifier != _ownProcessIdentifier
     ) {
-        CGRect quartzFrame = CGRectZero;
-        BOOL found = FVAccessibilityWindowFrame(
-            frontmostApplication.processIdentifier,
-            &quartzFrame
-        );
-        if (!found) {
-            found = FVFallbackWindowFrame(
-                frontmostApplication.processIdentifier,
-                &quartzFrame
-            );
-        }
-
-        if (found) {
-            _lastWindowFrame = FVAppKitRectFromQuartzRect(quartzFrame);
+        CGWindowID windowNumber = 0;
+        if (FVWindowNumberForProcess(frontmostApplication.processIdentifier, &windowNumber)) {
+            _lastWindowNumber = windowNumber;
             _hasLastWindow = YES;
         } else {
+            _lastWindowNumber = 0;
             _hasLastWindow = NO;
         }
     }
@@ -460,13 +404,7 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
     }
 
     for (FVOverlay *overlay in _overlays) {
-        CGRect intersection = CGRectIntersection(
-            _lastWindowFrame,
-            overlay.screenFrame
-        );
-        BOOL intersects = !CGRectIsNull(intersection) && !CGRectIsEmpty(intersection);
-        [overlay showWithGlobalCutout:_lastWindowFrame
-                          hasCutout:intersects];
+        [overlay showBelowWindowNumber:_lastWindowNumber];
     }
 }
 
@@ -495,7 +433,6 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
     NSMenuItem *_permissionItem;
     NSMenuItem *_launchAtLoginItem;
     NSSlider *_intensitySlider;
-    NSTimer *_pauseTimer;
 }
 
 - (instancetype)init {
@@ -509,18 +446,9 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [self configureStatusItem];
     [_focusController start];
-
-    BOOL suppressPermissionPrompt = [
-        NSProcessInfo.processInfo.arguments
-        containsObject:@"--no-permission-prompt"
-    ];
-    if (!_focusController.accessibilityTrusted && !suppressPermissionPrompt) {
-        [_focusController requestAccessibilityPermission];
-    }
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
-    [_pauseTimer invalidate];
     [_focusController stop];
 }
 
@@ -543,12 +471,6 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
 
     [menu addItem:[self intensityMenuItem]];
     [menu addItem:NSMenuItem.separatorItem];
-
-    NSMenuItem *pauseItem = [[NSMenuItem alloc] initWithTitle:@"暂停五分钟"
-                                                       action:@selector(pauseForFiveMinutes:)
-                                                keyEquivalent:@""];
-    pauseItem.target = self;
-    [menu addItem:pauseItem];
 
     _permissionItem = [[NSMenuItem alloc] initWithTitle:@"辅助功能权限"
                                                   action:@selector(openAccessibilitySettings:)
@@ -614,7 +536,7 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
     BOOL trusted = _focusController.accessibilityTrusted;
     _permissionItem.title = trusted
         ? @"辅助功能权限已启用"
-        : @"需要启用辅助功能权限";
+        : @"打开辅助功能设置";
     _permissionItem.state = trusted
         ? NSControlStateValueOn
         : NSControlStateValueOff;
@@ -628,8 +550,6 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
 }
 
 - (void)toggleEnabled:(id)sender {
-    [_pauseTimer invalidate];
-    _pauseTimer = nil;
     _focusController.paused = NO;
     [_focusController setEnabled:!FVIsEnabled()];
     [self updateMenuState];
@@ -639,29 +559,7 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
     [_focusController setDimmingAmount:sender.doubleValue];
 }
 
-- (void)pauseForFiveMinutes:(id)sender {
-    [_pauseTimer invalidate];
-    _focusController.paused = YES;
-    [self updateMenuState];
-
-    __weak typeof(self) weakSelf = self;
-    _pauseTimer = [NSTimer scheduledTimerWithTimeInterval:300
-                                                 repeats:NO
-                                                   block:^(NSTimer *timer) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) {
-            return;
-        }
-        strongSelf->_focusController.paused = NO;
-        [strongSelf updateMenuState];
-    }];
-}
-
 - (void)openAccessibilitySettings:(id)sender {
-    if (!_focusController.accessibilityTrusted) {
-        [_focusController requestAccessibilityPermission];
-    }
-
     NSURL *settingsURL = [NSURL URLWithString:
         @"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
     if (settingsURL) {
@@ -687,17 +585,23 @@ static BOOL FVFallbackWindowFrame(pid_t processIdentifier, CGRect *result) {
 }
 
 - (void)showAbout:(id)sender {
+    BOOL wasPaused = _focusController.isPaused;
     _focusController.paused = YES;
 
+    NSString *version = [NSBundle.mainBundle
+        objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.1.0";
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"FocusVeil";
-    alert.informativeText =
-        @"保持当前窗口原有显示，并将其他区域压暗。\n\n版本 0.1.0";
+    alert.informativeText = [NSString stringWithFormat:
+        @"保持当前活动窗口原有亮度，并压暗其余窗口和桌面背景。\n\n版本：%@\nGitHub：%@",
+        version,
+        FVGitHubURLString
+    ];
     alert.alertStyle = NSAlertStyleInformational;
     [alert addButtonWithTitle:@"好"];
     [alert runModal];
 
-    _focusController.paused = NO;
+    _focusController.paused = wasPaused;
 }
 
 - (void)showAlertWithTitle:(NSString *)title message:(NSString *)message {

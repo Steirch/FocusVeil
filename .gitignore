@@ -6,3 +6,5 @@ outputs/
 DerivedData/
 *.xcuserdata/
 *.xcuserstate
+Resources/AppIcon-source-normalized.png
+Resources/AppIcon-source.png
