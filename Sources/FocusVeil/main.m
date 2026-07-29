@@ -9,16 +9,22 @@ static NSString * const FVRankedBrightnessEnabledKey = @"rankedBrightnessEnabled
 static NSString * const FVHighlightWindowCountKey = @"highlightWindowCount";
 static NSString * const FVRankedBrightnessCustomizedKey = @"rankedBrightnessCustomized";
 static NSString * const FVGitHubURLString = @"https://github.com/Steirch/FocusVeil";
+static const CGFloat FVDefaultDimmingAmount = 0.52;
 static const NSInteger FVMinimumHighlightWindowCount = 1;
 static const NSInteger FVMaximumHighlightWindowCount = 4;
 static const CGFloat FVMinimumRankedBrightness = 0.0;
 static const CGFloat FVMaximumRankedBrightness = 0.95;
+static const CGFloat FVSingleRankedBrightnessDefault = 0.55;
+static const CGFloat FVTopRankedBrightnessDefault = 0.62;
+static const CGFloat FVBottomRankedBrightnessDefault = 0.06;
+static const CGFloat FVRankedBrightnessDefaultCurve = 1.35;
+static const CGFloat FVRankedBrightnessResponseCurve = 1.45;
 static const CGFloat FVMinimumVisibleWindowAreaRatio = 0.08;
 
 static void FVRegisterDefaults(void) {
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
         FVEnabledKey: @YES,
-        FVDimmingAmountKey: @0.42,
+        FVDimmingAmountKey: @(FVDefaultDimmingAmount),
         FVRankedBrightnessEnabledKey: @NO,
         FVHighlightWindowCountKey: @2,
         FVRankedBrightnessCustomizedKey: @NO
@@ -82,7 +88,16 @@ static CGFloat FVDefaultRankedBrightnessForLevel(
         MAX(configuredCount, level),
         FVMaximumHighlightWindowCount
     );
-    return (CGFloat)(configuredCount - level + 1) / (CGFloat)(configuredCount + 1);
+    if (configuredCount <= FVMinimumHighlightWindowCount) {
+        return FVSingleRankedBrightnessDefault;
+    }
+
+    CGFloat position = (CGFloat)(configuredCount - level)
+        / (CGFloat)(configuredCount - FVMinimumHighlightWindowCount);
+    CGFloat brightness = FVBottomRankedBrightnessDefault
+        + (FVTopRankedBrightnessDefault - FVBottomRankedBrightnessDefault)
+            * pow(position, FVRankedBrightnessDefaultCurve);
+    return FVClampRankedBrightness(brightness);
 }
 
 static BOOL FVRankedBrightnessCustomized(void) {
@@ -110,6 +125,11 @@ static CGFloat FVRankedBrightnessForLevel(NSInteger level, NSInteger configuredC
     }
 
     return FVStoredRankedBrightnessForLevel(level, configuredCount);
+}
+
+static CGFloat FVEffectiveRankedBrightness(CGFloat brightness) {
+    brightness = FVClampRankedBrightness(brightness);
+    return pow(brightness, FVRankedBrightnessResponseCurve);
 }
 
 static void FVNormalizeRankedBrightnessValues(void) {
@@ -181,6 +201,25 @@ static CGFloat FVIncrementalDimmingAmount(CGFloat previousAmount, CGFloat target
 
     return (targetAmount - previousAmount) / (1 - previousAmount);
 }
+
+@interface FVWindowSnapshot : NSObject
+@property(nonatomic, readonly) CGWindowID windowNumber;
+@property(nonatomic, readonly) CGRect frame;
+- (instancetype)initWithWindowNumber:(CGWindowID)windowNumber frame:(CGRect)frame;
+@end
+
+@implementation FVWindowSnapshot
+
+- (instancetype)initWithWindowNumber:(CGWindowID)windowNumber frame:(CGRect)frame {
+    self = [super init];
+    if (self) {
+        _windowNumber = windowNumber;
+        _frame = frame;
+    }
+    return self;
+}
+
+@end
 
 static BOOL FVAccessibilityWindowFrame(pid_t processIdentifier, CGRect *result) {
     AXUIElementRef applicationElement = AXUIElementCreateApplication(processIdentifier);
@@ -286,7 +325,36 @@ static BOOL FVWindowFrameIsSubstantiallyVisible(CGRect frame) {
     return visibleArea / frameArea >= FVMinimumVisibleWindowAreaRatio;
 }
 
-static BOOL FVWindowNumberForProcess(pid_t processIdentifier, CGWindowID *result) {
+static NSNumber *FVDisplayIdentifierWithLargestIntersection(CGRect frame) {
+    CGDirectDisplayID displays[32];
+    uint32_t displayCount = 0;
+    CGError error = CGGetActiveDisplayList(32, displays, &displayCount);
+    if (error != kCGErrorSuccess || displayCount == 0) {
+        return nil;
+    }
+
+    CGFloat largestArea = 0;
+    CGDirectDisplayID selectedDisplay = 0;
+    for (uint32_t index = 0; index < displayCount; index++) {
+        CGRect displayBounds = CGDisplayBounds(displays[index]);
+        CGFloat area = FVRectArea(CGRectIntersection(frame, displayBounds));
+        if (area > largestArea) {
+            largestArea = area;
+            selectedDisplay = displays[index];
+        }
+    }
+
+    if (selectedDisplay == 0 || largestArea <= 0) {
+        return nil;
+    }
+
+    return @(selectedDisplay);
+}
+
+static BOOL FVWindowSnapshotForProcess(
+    pid_t processIdentifier,
+    FVWindowSnapshot **result
+) {
     CGRect focusedFrame = CGRectZero;
     BOOL hasFocusedFrame = FVAccessibilityWindowFrame(processIdentifier, &focusedFrame);
 
@@ -304,7 +372,7 @@ static BOOL FVWindowNumberForProcess(pid_t processIdentifier, CGWindowID *result
     NSString *numberKey = (__bridge NSString *)kCGWindowNumber;
     NSString *boundsKey = (__bridge NSString *)kCGWindowBounds;
     NSString *alphaKey = (__bridge NSString *)kCGWindowAlpha;
-    CGWindowID firstWindowNumber = 0;
+    FVWindowSnapshot *firstWindowSnapshot = nil;
 
     for (NSDictionary *window in windowList) {
         NSNumber *owner = window[ownerKey];
@@ -327,25 +395,28 @@ static BOOL FVWindowNumberForProcess(pid_t processIdentifier, CGWindowID *result
             frame.size.width > 40 &&
             frame.size.height > 40
         ) {
-            if (firstWindowNumber == 0) {
-                firstWindowNumber = windowNumber.unsignedIntValue;
+            FVWindowSnapshot *snapshot = [[FVWindowSnapshot alloc]
+                initWithWindowNumber:windowNumber.unsignedIntValue
+                                frame:frame];
+            if (firstWindowSnapshot == nil) {
+                firstWindowSnapshot = snapshot;
             }
             if (hasFocusedFrame && FVRectApproximatelyEqual(frame, focusedFrame)) {
-                *result = windowNumber.unsignedIntValue;
+                *result = snapshot;
                 return YES;
             }
         }
     }
 
-    if (firstWindowNumber != 0) {
-        *result = firstWindowNumber;
+    if (firstWindowSnapshot != nil) {
+        *result = firstWindowSnapshot;
         return YES;
     }
 
     return NO;
 }
 
-static NSSet<NSNumber *> *FVVisibleNormalWindowNumbersExcludingProcess(
+static NSArray<FVWindowSnapshot *> *FVVisibleNormalWindowSnapshotsExcludingProcess(
     pid_t processIdentifier
 ) {
     CFArrayRef windowListReference = CGWindowListCopyWindowInfo(
@@ -353,7 +424,7 @@ static NSSet<NSNumber *> *FVVisibleNormalWindowNumbersExcludingProcess(
         kCGNullWindowID
     );
     if (windowListReference == NULL) {
-        return [NSSet set];
+        return @[];
     }
 
     NSArray<NSDictionary *> *windowList = CFBridgingRelease(windowListReference);
@@ -362,7 +433,7 @@ static NSSet<NSNumber *> *FVVisibleNormalWindowNumbersExcludingProcess(
     NSString *numberKey = (__bridge NSString *)kCGWindowNumber;
     NSString *boundsKey = (__bridge NSString *)kCGWindowBounds;
     NSString *alphaKey = (__bridge NSString *)kCGWindowAlpha;
-    NSMutableSet<NSNumber *> *windowNumbers = [NSMutableSet set];
+    NSMutableArray<FVWindowSnapshot *> *windowSnapshots = [NSMutableArray array];
 
     for (NSDictionary *window in windowList) {
         NSNumber *owner = window[ownerKey];
@@ -386,11 +457,25 @@ static NSSet<NSNumber *> *FVVisibleNormalWindowNumbersExcludingProcess(
             frame.size.height > 40 &&
             FVWindowFrameIsSubstantiallyVisible(frame)
         ) {
-            [windowNumbers addObject:windowNumber];
+            FVWindowSnapshot *snapshot = [[FVWindowSnapshot alloc]
+                initWithWindowNumber:windowNumber.unsignedIntValue
+                                frame:frame];
+            [windowSnapshots addObject:snapshot];
         }
     }
 
-    return windowNumbers;
+    return windowSnapshots;
+}
+
+static NSDictionary<NSNumber *, FVWindowSnapshot *> *FVWindowSnapshotsByWindowNumber(
+    NSArray<FVWindowSnapshot *> *windowSnapshots
+) {
+    NSMutableDictionary<NSNumber *, FVWindowSnapshot *> *snapshotsByNumber =
+        [NSMutableDictionary dictionary];
+    for (FVWindowSnapshot *snapshot in windowSnapshots) {
+        snapshotsByNumber[@(snapshot.windowNumber)] = snapshot;
+    }
+    return snapshotsByNumber;
 }
 
 static BOOL FVIsFinderApplication(NSRunningApplication *application) {
@@ -527,7 +612,9 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 
 @implementation FVFocusController {
     NSMutableArray<NSMutableArray<FVOverlay *> *> *_overlayLayers;
-    NSMutableArray<NSNumber *> *_recentWindowNumbers;
+    NSMutableArray<NSNumber *> *_overlayDisplayIdentifiers;
+    NSMutableDictionary<NSNumber *, NSMutableArray<NSNumber *> *>
+        *_recentWindowNumbersByDisplayIdentifier;
     NSTimer *_refreshTimer;
     pid_t _ownProcessIdentifier;
 }
@@ -536,7 +623,8 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     self = [super init];
     if (self) {
         _overlayLayers = [NSMutableArray array];
-        _recentWindowNumbers = [NSMutableArray array];
+        _overlayDisplayIdentifiers = [NSMutableArray array];
+        _recentWindowNumbersByDisplayIdentifier = [NSMutableDictionary dictionary];
         _ownProcessIdentifier = NSProcessInfo.processInfo.processIdentifier;
         _paused = NO;
     }
@@ -635,21 +723,28 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
         && frontmostApplication.processIdentifier != _ownProcessIdentifier;
     BOOL frontmostHasWindow = NO;
     BOOL frontmostIsFinderDesktop = NO;
-    CGWindowID frontmostWindowNumber = 0;
+    FVWindowSnapshot *frontmostWindowSnapshot = nil;
 
     if (hasExternalFrontmostApplication) {
-        CGWindowID windowNumber = 0;
-        if (FVWindowNumberForProcess(frontmostApplication.processIdentifier, &windowNumber)) {
-            frontmostWindowNumber = windowNumber;
-            [self recordActiveWindowNumber:windowNumber];
+        FVWindowSnapshot *windowSnapshot = nil;
+        if (
+            FVWindowSnapshotForProcess(
+                frontmostApplication.processIdentifier,
+                &windowSnapshot
+            )
+        ) {
+            frontmostWindowSnapshot = windowSnapshot;
+            [self recordActiveWindowSnapshot:windowSnapshot];
             frontmostHasWindow = YES;
         } else {
             frontmostIsFinderDesktop = FVIsFinderApplication(frontmostApplication);
         }
     }
 
-    NSSet<NSNumber *> *visibleWindowNumbers =
-        FVVisibleNormalWindowNumbersExcludingProcess(_ownProcessIdentifier);
+    NSArray<FVWindowSnapshot *> *visibleWindowSnapshots =
+        FVVisibleNormalWindowSnapshotsExcludingProcess(_ownProcessIdentifier);
+    NSDictionary<NSNumber *, FVWindowSnapshot *> *visibleWindowSnapshotsByNumber =
+        FVWindowSnapshotsByWindowNumber(visibleWindowSnapshots);
 
     if (
         hasExternalFrontmostApplication &&
@@ -661,29 +756,28 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     }
 
     if (frontmostHasWindow) {
-        NSNumber *frontmostWindowRecord = @(frontmostWindowNumber);
-        if (![visibleWindowNumbers containsObject:frontmostWindowRecord]) {
+        NSNumber *frontmostWindowRecord = @(frontmostWindowSnapshot.windowNumber);
+        if (visibleWindowSnapshotsByNumber[frontmostWindowRecord] == nil) {
             [self hideAllOverlayLayers];
             return;
         }
     }
 
-    if (_recentWindowNumbers.count == 0) {
+    if (
+        !frontmostHasWindow &&
+        [self hasRecentWindowNumbersForActiveDisplays] &&
+        ![self topRecentWindowNumbersAreVisible:visibleWindowSnapshotsByNumber]
+    ) {
         [self hideAllOverlayLayers];
         return;
     }
 
-    if (!frontmostHasWindow) {
-        NSNumber *latestWindowNumber = _recentWindowNumbers.firstObject;
-        if (![visibleWindowNumbers containsObject:latestWindowNumber]) {
-            [self hideAllOverlayLayers];
-            return;
-        }
-    }
+    [self pruneRecentWindowNumbersWithVisibleWindowSnapshotsByNumber:
+        visibleWindowSnapshotsByNumber];
+    [self seedMissingDisplayHistoriesWithVisibleWindowSnapshots:
+        visibleWindowSnapshots];
 
-    [self pruneRecentWindowNumbersWithVisibleWindowNumbers:visibleWindowNumbers];
-
-    if (_recentWindowNumbers.count == 0) {
+    if (![self hasRecentWindowNumbersForActiveDisplays]) {
         [self hideAllOverlayLayers];
         return;
     }
@@ -691,87 +785,235 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     [self applyOverlayLayers];
 }
 
-- (void)recordActiveWindowNumber:(CGWindowID)windowNumber {
-    NSNumber *record = @(windowNumber);
-    NSUInteger existingIndex = [_recentWindowNumbers indexOfObject:record];
-    if (existingIndex != NSNotFound) {
-        [_recentWindowNumbers removeObjectAtIndex:existingIndex];
-    }
-    [_recentWindowNumbers insertObject:record atIndex:0];
-    [self trimRecentWindowNumbers];
-}
-
-- (void)pruneRecentWindowNumbersWithVisibleWindowNumbers:
-    (NSSet<NSNumber *> *)visibleWindowNumbers {
-    NSIndexSet *removedIndexes = [_recentWindowNumbers
-        indexesOfObjectsPassingTest:^BOOL(NSNumber *windowNumber, NSUInteger index, BOOL *stop) {
-            return ![visibleWindowNumbers containsObject:windowNumber];
-        }];
-    [_recentWindowNumbers removeObjectsAtIndexes:removedIndexes];
-    [self trimRecentWindowNumbers];
-}
-
-- (void)trimRecentWindowNumbers {
-    NSUInteger limit = (NSUInteger)FVMaximumHighlightWindowCount + 1;
-    while (_recentWindowNumbers.count > limit) {
-        [_recentWindowNumbers removeLastObject];
-    }
-}
-
-- (void)applyOverlayLayers {
-    NSMutableArray<NSNumber *> *boundaryWindowNumbers = [NSMutableArray array];
-    [boundaryWindowNumbers addObject:_recentWindowNumbers.firstObject];
-
-    NSInteger configuredHighlightCount = FVRankedBrightnessEnabled()
-        ? FVHighlightWindowCount()
-        : 0;
-    NSUInteger availableHighlightCount = _recentWindowNumbers.count > 0
-        ? _recentWindowNumbers.count - 1
-        : 0;
-    NSUInteger usedHighlightCount =
-        MIN((NSUInteger)configuredHighlightCount, availableHighlightCount);
-
-    for (NSUInteger index = 0; index < usedHighlightCount; index++) {
-        [boundaryWindowNumbers addObject:_recentWindowNumbers[index + 1]];
+- (NSMutableArray<NSNumber *> *)recentWindowNumbersForDisplayIdentifier:
+    (NSNumber *)displayIdentifier
+                                                           createIfNeeded:
+    (BOOL)createIfNeeded {
+    if (displayIdentifier == nil) {
+        return nil;
     }
 
-    CGFloat deepestAmount = FVDimmingAmount();
-    CGFloat previousTargetAmount = 0;
+    NSMutableArray<NSNumber *> *recentWindowNumbers =
+        _recentWindowNumbersByDisplayIdentifier[displayIdentifier];
+    if (recentWindowNumbers == nil && createIfNeeded) {
+        recentWindowNumbers = [NSMutableArray array];
+        _recentWindowNumbersByDisplayIdentifier[displayIdentifier] =
+            recentWindowNumbers;
+    }
+    return recentWindowNumbers;
+}
 
-    for (NSUInteger layerIndex = 0; layerIndex < _overlayLayers.count; layerIndex++) {
-        NSArray<FVOverlay *> *overlays = _overlayLayers[layerIndex];
-        if (layerIndex >= boundaryWindowNumbers.count) {
-            for (FVOverlay *overlay in overlays) {
-                [overlay hide];
-            }
+- (void)recordActiveWindowSnapshot:(FVWindowSnapshot *)windowSnapshot {
+    NSNumber *displayIdentifier =
+        FVDisplayIdentifierWithLargestIntersection(windowSnapshot.frame);
+    if (displayIdentifier == nil) {
+        return;
+    }
+
+    NSNumber *record = @(windowSnapshot.windowNumber);
+    [self removeWindowNumberFromAllDisplayHistories:record];
+
+    NSMutableArray<NSNumber *> *recentWindowNumbers =
+        [self recentWindowNumbersForDisplayIdentifier:displayIdentifier
+                                      createIfNeeded:YES];
+    [recentWindowNumbers insertObject:record atIndex:0];
+    [self trimRecentWindowNumbers:recentWindowNumbers];
+}
+
+- (void)removeWindowNumberFromAllDisplayHistories:(NSNumber *)windowNumber {
+    for (NSMutableArray<NSNumber *> *recentWindowNumbers
+         in _recentWindowNumbersByDisplayIdentifier.allValues) {
+        [recentWindowNumbers removeObject:windowNumber];
+    }
+}
+
+- (void)pruneRecentWindowNumbersWithVisibleWindowSnapshotsByNumber:
+    (NSDictionary<NSNumber *, FVWindowSnapshot *> *)visibleWindowSnapshotsByNumber {
+    NSSet<NSNumber *> *activeDisplayIdentifiers =
+        [NSSet setWithArray:_overlayDisplayIdentifiers];
+    for (NSNumber *displayIdentifier
+         in _recentWindowNumbersByDisplayIdentifier.allKeys.copy) {
+        NSMutableArray<NSNumber *> *recentWindowNumbers =
+            _recentWindowNumbersByDisplayIdentifier[displayIdentifier];
+        if (![activeDisplayIdentifiers containsObject:displayIdentifier]) {
+            [_recentWindowNumbersByDisplayIdentifier
+                removeObjectForKey:displayIdentifier];
             continue;
         }
 
-        CGFloat targetAmount = deepestAmount;
+        NSIndexSet *removedIndexes = [recentWindowNumbers
+            indexesOfObjectsPassingTest:^BOOL(
+                NSNumber *windowNumber,
+                NSUInteger index,
+                BOOL *stop
+            ) {
+                FVWindowSnapshot *snapshot =
+                    visibleWindowSnapshotsByNumber[windowNumber];
+                if (snapshot == nil) {
+                    return YES;
+                }
+
+                NSNumber *currentDisplayIdentifier =
+                    FVDisplayIdentifierWithLargestIntersection(snapshot.frame);
+                return ![currentDisplayIdentifier isEqualToNumber:displayIdentifier];
+            }];
+        [recentWindowNumbers removeObjectsAtIndexes:removedIndexes];
+        [self trimRecentWindowNumbers:recentWindowNumbers];
+        if (recentWindowNumbers.count == 0) {
+            [_recentWindowNumbersByDisplayIdentifier
+                removeObjectForKey:displayIdentifier];
+        }
+    }
+}
+
+- (void)seedMissingDisplayHistoriesWithVisibleWindowSnapshots:
+    (NSArray<FVWindowSnapshot *> *)visibleWindowSnapshots {
+    NSSet<NSNumber *> *activeDisplayIdentifiers =
+        [NSSet setWithArray:_overlayDisplayIdentifiers];
+    for (FVWindowSnapshot *snapshot in visibleWindowSnapshots) {
+        NSNumber *displayIdentifier =
+            FVDisplayIdentifierWithLargestIntersection(snapshot.frame);
         if (
-            FVRankedBrightnessEnabled() &&
-            usedHighlightCount > 0 &&
-            layerIndex < usedHighlightCount
+            displayIdentifier == nil ||
+            ![activeDisplayIdentifiers containsObject:displayIdentifier]
         ) {
-            NSInteger level = (NSInteger)layerIndex + 1;
-            CGFloat brightness = FVRankedBrightnessForLevel(
-                level,
-                configuredHighlightCount
-            );
-            targetAmount = deepestAmount * (1 - brightness);
+            continue;
         }
 
-        CGFloat layerAmount = FVIncrementalDimmingAmount(
-            previousTargetAmount,
-            targetAmount
-        );
-        previousTargetAmount = targetAmount;
+        NSMutableArray<NSNumber *> *recentWindowNumbers =
+            [self recentWindowNumbersForDisplayIdentifier:displayIdentifier
+                                          createIfNeeded:NO];
+        if (recentWindowNumbers.count > 0) {
+            continue;
+        }
 
-        CGWindowID windowNumber =
-            boundaryWindowNumbers[layerIndex].unsignedIntValue;
-        for (FVOverlay *overlay in overlays) {
+        recentWindowNumbers =
+            [self recentWindowNumbersForDisplayIdentifier:displayIdentifier
+                                          createIfNeeded:YES];
+        [recentWindowNumbers addObject:@(snapshot.windowNumber)];
+    }
+}
+
+- (BOOL)hasRecentWindowNumbersForActiveDisplays {
+    for (NSNumber *displayIdentifier in _overlayDisplayIdentifiers) {
+        NSArray<NSNumber *> *recentWindowNumbers =
+            _recentWindowNumbersByDisplayIdentifier[displayIdentifier];
+        if (recentWindowNumbers.count > 0) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (BOOL)topRecentWindowNumbersAreVisible:
+    (NSDictionary<NSNumber *, FVWindowSnapshot *> *)visibleWindowSnapshotsByNumber {
+    for (NSNumber *displayIdentifier in _overlayDisplayIdentifiers) {
+        NSArray<NSNumber *> *recentWindowNumbers =
+            _recentWindowNumbersByDisplayIdentifier[displayIdentifier];
+        if (recentWindowNumbers.count == 0) {
+            continue;
+        }
+
+        NSNumber *topWindowNumber = recentWindowNumbers.firstObject;
+        if (visibleWindowSnapshotsByNumber[topWindowNumber] == nil) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+- (void)trimRecentWindowNumbers:(NSMutableArray<NSNumber *> *)recentWindowNumbers {
+    NSUInteger limit = (NSUInteger)FVMaximumHighlightWindowCount + 1;
+    while (recentWindowNumbers.count > limit) {
+        [recentWindowNumbers removeLastObject];
+    }
+}
+
+- (CGFloat)targetDimmingAmountForLayerIndex:(NSUInteger)layerIndex
+                         usedHighlightCount:(NSUInteger)usedHighlightCount
+                   configuredHighlightCount:(NSInteger)configuredHighlightCount
+                              deepestAmount:(CGFloat)deepestAmount {
+    if (
+        FVRankedBrightnessEnabled() &&
+        usedHighlightCount > 0 &&
+        layerIndex < usedHighlightCount
+    ) {
+        NSInteger level = (NSInteger)layerIndex + 1;
+        CGFloat brightness = FVRankedBrightnessForLevel(
+            level,
+            configuredHighlightCount
+        );
+        return deepestAmount * (1 - FVEffectiveRankedBrightness(brightness));
+    }
+
+    return deepestAmount;
+}
+
+- (void)applyOverlayLayers {
+    NSInteger configuredHighlightCount = FVRankedBrightnessEnabled()
+        ? FVHighlightWindowCount()
+        : 0;
+    CGFloat deepestAmount = FVDimmingAmount();
+
+    for (NSUInteger layerIndex = 0; layerIndex < _overlayLayers.count; layerIndex++) {
+        NSArray<FVOverlay *> *overlays = _overlayLayers[layerIndex];
+        for (NSUInteger overlayIndex = 0; overlayIndex < overlays.count; overlayIndex++) {
+            FVOverlay *overlay = overlays[overlayIndex];
+            if (overlayIndex >= _overlayDisplayIdentifiers.count) {
+                [overlay hide];
+                continue;
+            }
+
+            NSNumber *displayIdentifier = _overlayDisplayIdentifiers[overlayIndex];
+            NSArray<NSNumber *> *recentWindowNumbers =
+                _recentWindowNumbersByDisplayIdentifier[displayIdentifier];
+            if (recentWindowNumbers.count == 0) {
+                [overlay hide];
+                continue;
+            }
+
+            NSUInteger availableHighlightCount = recentWindowNumbers.count > 0
+                ? recentWindowNumbers.count - 1
+                : 0;
+            NSUInteger usedHighlightCount =
+                MIN((NSUInteger)configuredHighlightCount, availableHighlightCount);
+            NSUInteger boundaryCount = usedHighlightCount + 1;
+            if (layerIndex >= boundaryCount) {
+                [overlay hide];
+                continue;
+            }
+
+            CGFloat targetAmount = [self targetDimmingAmountForLayerIndex:layerIndex
+                                                       usedHighlightCount:usedHighlightCount
+                                                 configuredHighlightCount:configuredHighlightCount
+                                                            deepestAmount:deepestAmount];
+            CGFloat previousTargetAmount = layerIndex == 0
+                ? 0
+                : [self targetDimmingAmountForLayerIndex:layerIndex - 1
+                                      usedHighlightCount:usedHighlightCount
+                                configuredHighlightCount:configuredHighlightCount
+                                           deepestAmount:deepestAmount];
+            CGFloat layerAmount = FVIncrementalDimmingAmount(
+                previousTargetAmount,
+                targetAmount
+            );
+
+            CGWindowID windowNumber =
+                recentWindowNumbers[layerIndex].unsignedIntValue;
             [overlay updateDimmingAmount:layerAmount];
             [overlay showBelowWindowNumber:windowNumber];
+        }
+    }
+}
+
+- (void)pruneHistoriesForActiveDisplays {
+    NSSet<NSNumber *> *activeDisplayIdentifiers =
+        [NSSet setWithArray:_overlayDisplayIdentifiers];
+    for (NSNumber *displayIdentifier
+         in _recentWindowNumbersByDisplayIdentifier.allKeys.copy) {
+        if (![activeDisplayIdentifiers containsObject:displayIdentifier]) {
+            [_recentWindowNumbersByDisplayIdentifier
+                removeObjectForKey:displayIdentifier];
         }
     }
 }
@@ -779,6 +1021,19 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 - (void)rebuildOverlays {
     [self hideAllOverlayLayers];
     [_overlayLayers removeAllObjects];
+    [_overlayDisplayIdentifiers removeAllObjects];
+
+    NSMutableArray<NSScreen *> *screens = [NSMutableArray array];
+    for (NSScreen *screen in NSScreen.screens) {
+        NSNumber *displayIdentifier = screen.deviceDescription[@"NSScreenNumber"];
+        if (displayIdentifier == nil) {
+            continue;
+        }
+
+        [_overlayDisplayIdentifiers addObject:displayIdentifier];
+        [screens addObject:screen];
+    }
+    [self pruneHistoriesForActiveDisplays];
 
     NSUInteger layerCount = FVRankedBrightnessEnabled()
         ? (NSUInteger)FVHighlightWindowCount() + 1
@@ -786,7 +1041,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 
     for (NSUInteger layerIndex = 0; layerIndex < layerCount; layerIndex++) {
         NSMutableArray<FVOverlay *> *overlays = [NSMutableArray array];
-        for (NSScreen *screen in NSScreen.screens) {
+        for (NSScreen *screen in screens) {
             FVOverlay *overlay = [[FVOverlay alloc] initWithScreen:screen
                                                     dimmingAmount:0];
             [overlays addObject:overlay];
