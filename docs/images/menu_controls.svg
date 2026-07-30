@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">FocusVeil 菜单栏控制示意</title>
+  <desc id="desc">菜单中可以启用背景压暗，调节强度，设置历史窗口亮度，检查更新并控制登录启动。</desc>
+  <defs>
+    <filter id="panelShadow" x="-18%" y="-12%" width="136%" height="132%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#111827" flood-opacity="0.16"/>
+    </filter>
+    <linearGradient id="barGradient" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#EEF2F7"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="#FBFBF8"/>
+  <text x="72" y="70" fill="#1E293B" font-family="Arial, 'PingFang SC', sans-serif" font-size="34" font-weight="700">所有常用设置都集中在菜单栏</text>
+  <text x="72" y="112" fill="#475569" font-family="Arial, 'PingFang SC', sans-serif" font-size="20">启动后无需打开主窗口，压暗效果、历史亮度、更新检查和登录启动都可以直接调整。</text>
+
+  <g transform="translate(72 150)">
+    <rect width="1136" height="500" rx="28" fill="#E7EBEF"/>
+    <rect x="20" y="20" width="1096" height="460" rx="18" fill="#F7F1E6"/>
+    <rect x="20" y="20" width="1096" height="36" rx="18" fill="url(#barGradient)"/>
+    <rect x="20" y="44" width="1096" height="12" fill="url(#barGradient)"/>
+    <text x="42" y="43" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="15">编辑器</text>
+    <text x="906" y="43" fill="#334155" font-family="Arial, 'PingFang SC', sans-serif" font-size="15">10:42</text>
+    <circle cx="1018" cy="38" r="12" fill="#2F5D62"/>
+    <path d="M1010 38 C1015 26 1028 29 1028 39 C1028 49 1014 51 1010 38 Z" fill="#FFFFFF" opacity="0.92"/>
+    <rect x="692" y="58" width="374" height="424" rx="18" fill="#FFFFFF" stroke="#D7DEE7" filter="url(#panelShadow)"/>
+
+    <g font-family="Arial, 'PingFang SC', sans-serif">
+      <text x="720" y="98" fill="#111827" font-size="18" font-weight="700">FocusVeil</text>
+      <line x1="714" y1="116" x2="1044" y2="116" stroke="#E2E8F0"/>
+
+      <text x="724" y="150" fill="#1F2937" font-size="16">✓ 启用背景压暗</text>
+      <text x="724" y="190" fill="#475569" font-size="14">背景压暗强度</text>
+      <rect x="850" y="180" width="150" height="6" rx="3" fill="#D8DEE9"/>
+      <rect x="850" y="180" width="88" height="6" rx="3" fill="#2F5D62"/>
+      <circle cx="938" cy="183" r="10" fill="#FFFFFF" stroke="#2F5D62" stroke-width="3"/>
+
+      <line x1="714" y1="214" x2="1044" y2="214" stroke="#E2E8F0"/>
+      <text x="724" y="248" fill="#1F2937" font-size="16">✓ 启用分级亮度</text>
+      <text x="724" y="288" fill="#1F2937" font-size="16">历史高亮窗口：3</text>
+      <text x="724" y="328" fill="#475569" font-size="14">分级亮度</text>
+      <rect x="842" y="318" width="150" height="6" rx="3" fill="#D8DEE9"/>
+      <rect x="842" y="318" width="112" height="6" rx="3" fill="#8CBDB9"/>
+      <circle cx="954" cy="321" r="9" fill="#FFFFFF" stroke="#8CBDB9" stroke-width="3"/>
+      <rect x="842" y="350" width="150" height="6" rx="3" fill="#D8DEE9"/>
+      <rect x="842" y="350" width="72" height="6" rx="3" fill="#D6A75B"/>
+      <circle cx="914" cy="353" r="9" fill="#FFFFFF" stroke="#D6A75B" stroke-width="3"/>
+
+      <line x1="714" y1="376" x2="1044" y2="376" stroke="#E2E8F0"/>
+      <text x="724" y="408" fill="#1F2937" font-size="16">辅助功能权限</text>
+      <text x="724" y="438" fill="#1F2937" font-size="16">登录时启动</text>
+      <text x="884" y="438" fill="#2F5D62" font-size="16">✓</text>
+      <text x="724" y="468" fill="#1F2937" font-size="16">检查更新</text>
+
+      <rect x="88" y="112" width="510" height="296" rx="18" fill="#FFFFFF" stroke="#D7DEE7"/>
+      <rect x="118" y="152" width="210" height="22" rx="11" fill="#2F5D62"/>
+      <rect x="118" y="200" width="392" height="14" rx="7" fill="#CBD5E1"/>
+      <rect x="118" y="234" width="334" height="14" rx="7" fill="#CBD5E1"/>
+      <rect x="118" y="268" width="366" height="14" rx="7" fill="#CBD5E1"/>
+      <rect x="118" y="326" width="136" height="38" rx="10" fill="#B75D69"/>
+      <rect x="274" y="326" width="136" height="38" rx="10" fill="#D6A75B"/>
+
+      <rect x="82" y="424" width="430" height="42" rx="12" fill="#FFFFFF" stroke="#8CBDB9"/>
+      <text x="106" y="451" fill="#1E293B" font-size="16">无需额外主界面，菜单完成日常控制</text>
+    </g>
+  </g>
+</svg>

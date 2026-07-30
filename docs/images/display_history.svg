@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">FocusVeil 多显示器与历史亮度示意</title>
+  <desc id="desc">每个显示器独立保留焦点窗口，历史窗口按最近活跃顺序保留不同亮度。</desc>
+  <defs>
+    <filter id="displayShadow" x="-12%" y="-14%" width="124%" height="132%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#111827" flood-opacity="0.18"/>
+    </filter>
+    <linearGradient id="wallpaperA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F5E8C7"/>
+      <stop offset="1" stop-color="#DDEDEB"/>
+    </linearGradient>
+    <linearGradient id="wallpaperB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E8ECF8"/>
+      <stop offset="1" stop-color="#F7E7E9"/>
+    </linearGradient>
+    <linearGradient id="windowHeader" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#E9ECEF"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="#FBFBF8"/>
+  <text x="72" y="70" fill="#1E293B" font-family="Arial, 'PingFang SC', sans-serif" font-size="34" font-weight="700">多显示器和历史窗口各自保持清晰层级</text>
+  <text x="72" y="112" fill="#475569" font-family="Arial, 'PingFang SC', sans-serif" font-size="20">切换其中一块屏幕的窗口，不会重置其他屏幕已经保留的主要窗口。</text>
+
+  <g transform="translate(72 154)" font-family="Arial, 'PingFang SC', sans-serif">
+    <g transform="translate(0 0)" filter="url(#displayShadow)">
+      <rect width="530" height="360" rx="24" fill="#D8DEE9"/>
+      <rect x="16" y="16" width="498" height="328" rx="16" fill="url(#wallpaperA)"/>
+      <rect x="16" y="16" width="498" height="30" rx="16" fill="#F8FAFC"/>
+      <rect x="16" y="38" width="498" height="8" fill="#F8FAFC"/>
+      <rect x="16" y="46" width="498" height="298" fill="#0B1120" opacity="0.46"/>
+
+      <g opacity="0.52">
+        <rect x="58" y="88" width="200" height="156" rx="14" fill="#FFFFFF" stroke="#CBD5E1"/>
+        <rect x="58" y="88" width="200" height="32" rx="14" fill="url(#windowHeader)"/>
+        <rect x="84" y="146" width="126" height="12" rx="6" fill="#94A3B8"/>
+        <rect x="84" y="174" width="96" height="12" rx="6" fill="#94A3B8"/>
+      </g>
+
+      <g opacity="0.72">
+        <rect x="274" y="112" width="178" height="172" rx="14" fill="#FFFFFF" stroke="#CBD5E1"/>
+        <rect x="274" y="112" width="178" height="32" rx="14" fill="url(#windowHeader)"/>
+        <rect x="302" y="168" width="116" height="12" rx="6" fill="#94A3B8"/>
+        <rect x="302" y="196" width="88" height="12" rx="6" fill="#94A3B8"/>
+      </g>
+
+      <g>
+        <rect x="138" y="144" width="250" height="150" rx="16" fill="#FFFFFF" stroke="#A7B5C3"/>
+        <rect x="138" y="144" width="250" height="34" rx="16" fill="url(#windowHeader)"/>
+        <rect x="168" y="198" width="140" height="14" rx="7" fill="#2F5D62"/>
+        <rect x="168" y="230" width="174" height="12" rx="6" fill="#CBD5E1"/>
+        <rect x="168" y="258" width="126" height="12" rx="6" fill="#CBD5E1"/>
+      </g>
+    </g>
+    <text x="178" y="402" fill="#1E293B" font-size="18" font-weight="700">内置显示器</text>
+    <text x="126" y="430" fill="#475569" font-size="15">当前窗口和历史窗口在本屏内排序</text>
+
+    <g transform="translate(606 0)" filter="url(#displayShadow)">
+      <rect width="530" height="360" rx="24" fill="#D8DEE9"/>
+      <rect x="16" y="16" width="498" height="328" rx="16" fill="url(#wallpaperB)"/>
+      <rect x="16" y="16" width="498" height="30" rx="16" fill="#F8FAFC"/>
+      <rect x="16" y="38" width="498" height="8" fill="#F8FAFC"/>
+      <rect x="16" y="46" width="498" height="298" fill="#0B1120" opacity="0.46"/>
+
+      <g opacity="0.5">
+        <rect x="70" y="96" width="178" height="150" rx="14" fill="#FFFFFF" stroke="#CBD5E1"/>
+        <rect x="70" y="96" width="178" height="32" rx="14" fill="url(#windowHeader)"/>
+        <rect x="98" y="152" width="116" height="12" rx="6" fill="#94A3B8"/>
+        <rect x="98" y="180" width="88" height="12" rx="6" fill="#94A3B8"/>
+      </g>
+
+      <g>
+        <rect x="214" y="116" width="236" height="178" rx="16" fill="#FFFFFF" stroke="#A7B5C3"/>
+        <rect x="214" y="116" width="236" height="34" rx="16" fill="url(#windowHeader)"/>
+        <rect x="244" y="174" width="132" height="14" rx="7" fill="#B75D69"/>
+        <rect x="244" y="208" width="156" height="12" rx="6" fill="#CBD5E1"/>
+        <rect x="244" y="236" width="118" height="12" rx="6" fill="#CBD5E1"/>
+      </g>
+    </g>
+    <text x="792" y="402" fill="#1E293B" font-size="18" font-weight="700">外接显示器</text>
+    <text x="732" y="430" fill="#475569" font-size="15">其他屏幕切换时，本屏焦点不被打断</text>
+
+    <g transform="translate(142 476)">
+      <rect width="852" height="78" rx="18" fill="#FFFFFF" stroke="#D7DEE7"/>
+      <circle cx="48" cy="39" r="16" fill="#2F5D62"/>
+      <text x="78" y="45" fill="#1E293B" font-size="16">当前窗口保持最亮</text>
+      <circle cx="300" cy="39" r="16" fill="#8CBDB9"/>
+      <text x="330" y="45" fill="#1E293B" font-size="16">较近历史窗口保留较高亮度</text>
+      <circle cx="612" cy="39" r="16" fill="#D6A75B"/>
+      <text x="642" y="45" fill="#1E293B" font-size="16">更早历史窗口更接近背景亮度</text>
+    </g>
+  </g>
+</svg>
