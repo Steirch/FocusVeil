@@ -746,15 +746,6 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     NSDictionary<NSNumber *, FVWindowSnapshot *> *visibleWindowSnapshotsByNumber =
         FVWindowSnapshotsByWindowNumber(visibleWindowSnapshots);
 
-    if (
-        hasExternalFrontmostApplication &&
-        !frontmostHasWindow &&
-        !frontmostIsFinderDesktop
-    ) {
-        [self hideAllOverlayLayers];
-        return;
-    }
-
     if (frontmostHasWindow) {
         NSNumber *frontmostWindowRecord = @(frontmostWindowSnapshot.windowNumber);
         if (visibleWindowSnapshotsByNumber[frontmostWindowRecord] == nil) {
@@ -765,6 +756,15 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 
     if (
         !frontmostHasWindow &&
+        !frontmostIsFinderDesktop &&
+        hasExternalFrontmostApplication
+    ) {
+        [self promoteTopVisibleWindowSnapshotsForActiveDisplays:visibleWindowSnapshots];
+    }
+
+    if (
+        !frontmostHasWindow &&
+        frontmostIsFinderDesktop &&
         [self hasRecentWindowNumbersForActiveDisplays] &&
         ![self topRecentWindowNumbersAreVisible:visibleWindowSnapshotsByNumber]
     ) {
@@ -891,6 +891,39 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
             [self recentWindowNumbersForDisplayIdentifier:displayIdentifier
                                           createIfNeeded:YES];
         [recentWindowNumbers addObject:@(snapshot.windowNumber)];
+    }
+}
+
+- (void)promoteTopVisibleWindowSnapshotsForActiveDisplays:
+    (NSArray<FVWindowSnapshot *> *)visibleWindowSnapshots {
+    NSSet<NSNumber *> *activeDisplayIdentifiers =
+        [NSSet setWithArray:_overlayDisplayIdentifiers];
+    NSMutableSet<NSNumber *> *promotedDisplayIdentifiers = [NSMutableSet set];
+
+    for (FVWindowSnapshot *snapshot in visibleWindowSnapshots) {
+        NSNumber *displayIdentifier =
+            FVDisplayIdentifierWithLargestIntersection(snapshot.frame);
+        if (
+            displayIdentifier == nil ||
+            ![activeDisplayIdentifiers containsObject:displayIdentifier] ||
+            [promotedDisplayIdentifiers containsObject:displayIdentifier]
+        ) {
+            continue;
+        }
+
+        NSNumber *record = @(snapshot.windowNumber);
+        [self removeWindowNumberFromAllDisplayHistories:record];
+
+        NSMutableArray<NSNumber *> *recentWindowNumbers =
+            [self recentWindowNumbersForDisplayIdentifier:displayIdentifier
+                                          createIfNeeded:YES];
+        [recentWindowNumbers insertObject:record atIndex:0];
+        [self trimRecentWindowNumbers:recentWindowNumbers];
+        [promotedDisplayIdentifiers addObject:displayIdentifier];
+
+        if (promotedDisplayIdentifiers.count == activeDisplayIdentifiers.count) {
+            return;
+        }
     }
 }
 
