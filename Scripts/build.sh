@@ -8,6 +8,9 @@ OUTPUT_DIR="${1:-${PROJECT_DIR}/outputs}"
 BUILD_DIR="$(mktemp -d /private/tmp/focusveilbuild.XXXXXX)"
 APP_DIR="${BUILD_DIR}/FocusVeil.app"
 ARCHIVE_PATH="${OUTPUT_DIR}/FocusVeil.zip"
+DMG_PATH="${OUTPUT_DIR}/FocusVeil.dmg"
+DMG_STAGING_DIR="${BUILD_DIR}/dmg"
+DMG_STAGING_APP_DIR="${DMG_STAGING_DIR}/FocusVeil.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
@@ -41,7 +44,18 @@ xattr -cr "${APP_DIR}"
 codesign --force --deep --sign - "${APP_DIR}"
 codesign --verify --deep --strict "${APP_DIR}"
 
-rm -f "${ARCHIVE_PATH}"
+rm -f "${ARCHIVE_PATH}" "${DMG_PATH}"
 ditto -c -k --norsrc --keepParent "${APP_DIR}" "${ARCHIVE_PATH}"
 
+mkdir -p "${DMG_STAGING_DIR}"
+ditto --norsrc "${APP_DIR}" "${DMG_STAGING_APP_DIR}"
+ln -s /Applications "${DMG_STAGING_DIR}/Applications"
+hdiutil create \
+    -volname "FocusVeil" \
+    -srcfolder "${DMG_STAGING_DIR}" \
+    -ov \
+    -format UDZO \
+    "${DMG_PATH}" >/dev/null
+
 echo "Built ${ARCHIVE_PATH}"
+echo "Built ${DMG_PATH}"
