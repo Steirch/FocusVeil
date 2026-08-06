@@ -397,6 +397,28 @@ static NSNumber *FVDisplayIdentifierWithLargestIntersection(CGRect frame) {
     return @(selectedDisplay);
 }
 
+static BOOL FVWindowFrameCoversDisplay(CGRect frame, NSNumber *displayIdentifier) {
+    if (displayIdentifier == nil || CGRectIsNull(frame) || CGRectIsEmpty(frame)) {
+        return NO;
+    }
+
+    CGRect displayBounds = CGDisplayBounds(displayIdentifier.unsignedIntValue);
+    CGFloat displayArea = FVRectArea(displayBounds);
+    if (displayArea <= 0) {
+        return NO;
+    }
+
+    CGFloat coveredDisplayArea = FVRectArea(CGRectIntersection(frame, displayBounds));
+    CGFloat coverageRatio = coveredDisplayArea / displayArea;
+    CGFloat edgeTolerance = 36.0;
+
+    return coverageRatio >= 0.95
+        && CGRectGetMinX(frame) <= CGRectGetMinX(displayBounds) + edgeTolerance
+        && CGRectGetMinY(frame) <= CGRectGetMinY(displayBounds) + edgeTolerance
+        && CGRectGetMaxX(frame) >= CGRectGetMaxX(displayBounds) - edgeTolerance
+        && CGRectGetMaxY(frame) >= CGRectGetMaxY(displayBounds) - edgeTolerance;
+}
+
 static BOOL FVWindowSnapshotForProcess(
     pid_t processIdentifier,
     FVWindowSnapshot **result
@@ -828,7 +850,8 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
         return;
     }
 
-    [self applyOverlayLayers];
+    [self applyOverlayLayersWithVisibleWindowSnapshotsByNumber:
+        visibleWindowSnapshotsByNumber];
 }
 
 - (NSMutableArray<NSNumber *> *)recentWindowNumbersForDisplayIdentifier:
@@ -1028,7 +1051,8 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     return deepestAmount;
 }
 
-- (void)applyOverlayLayers {
+- (void)applyOverlayLayersWithVisibleWindowSnapshotsByNumber:
+    (NSDictionary<NSNumber *, FVWindowSnapshot *> *)visibleWindowSnapshotsByNumber {
     NSInteger configuredHighlightCount = FVRankedBrightnessEnabled()
         ? FVHighlightWindowCount()
         : 0;
@@ -1047,6 +1071,17 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
             NSArray<NSNumber *> *recentWindowNumbers =
                 _recentWindowNumbersByDisplayIdentifier[displayIdentifier];
             if (recentWindowNumbers.count == 0) {
+                [overlay hide];
+                continue;
+            }
+
+            NSNumber *topWindowNumber = recentWindowNumbers.firstObject;
+            FVWindowSnapshot *topWindowSnapshot =
+                visibleWindowSnapshotsByNumber[topWindowNumber];
+            if (
+                topWindowSnapshot != nil &&
+                FVWindowFrameCoversDisplay(topWindowSnapshot.frame, displayIdentifier)
+            ) {
                 [overlay hide];
                 continue;
             }
