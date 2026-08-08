@@ -547,9 +547,48 @@ static BOOL FVWindowFrameCoversDisplay(CGRect frame, NSNumber *displayIdentifier
         && CGRectGetMaxY(frame) >= CGRectGetMaxY(displayBounds) - edgeTolerance;
 }
 
+static BOOL FVWindowFrameLikelyFillsDisplay(
+    CGRect frame,
+    NSNumber *displayIdentifier
+) {
+    if (displayIdentifier == nil || CGRectIsNull(frame) || CGRectIsEmpty(frame)) {
+        return NO;
+    }
+
+    CGRect displayBounds = CGDisplayBounds(displayIdentifier.unsignedIntValue);
+    CGFloat displayArea = FVRectArea(displayBounds);
+    if (displayArea <= 0) {
+        return NO;
+    }
+
+    CGRect intersection = CGRectIntersection(frame, displayBounds);
+    CGFloat coverageRatio = FVRectArea(intersection) / displayArea;
+    CGFloat widthRatio = CGRectGetWidth(intersection) / CGRectGetWidth(displayBounds);
+    CGFloat heightRatio = CGRectGetHeight(intersection) / CGRectGetHeight(displayBounds);
+    CGFloat edgeTolerance = 64.0;
+
+    BOOL spansDisplayWidth =
+        widthRatio >= 0.96 &&
+        CGRectGetMinX(frame) <= CGRectGetMinX(displayBounds) + edgeTolerance &&
+        CGRectGetMaxX(frame) >= CGRectGetMaxX(displayBounds) - edgeTolerance;
+    BOOL touchesVerticalDisplayEdge =
+        CGRectGetMinY(frame) <= CGRectGetMinY(displayBounds) + edgeTolerance ||
+        CGRectGetMaxY(frame) >= CGRectGetMaxY(displayBounds) - edgeTolerance;
+
+    return coverageRatio >= 0.88 &&
+        heightRatio >= 0.86 &&
+        spansDisplayWidth &&
+        touchesVerticalDisplayEdge;
+}
+
 static BOOL FVWindowFrameCoversAnyDisplay(CGRect frame) {
     NSNumber *displayIdentifier = FVDisplayIdentifierWithLargestIntersection(frame);
     return FVWindowFrameCoversDisplay(frame, displayIdentifier);
+}
+
+static BOOL FVWindowFrameLikelyFillsAnyDisplay(CGRect frame) {
+    NSNumber *displayIdentifier = FVDisplayIdentifierWithLargestIntersection(frame);
+    return FVWindowFrameLikelyFillsDisplay(frame, displayIdentifier);
 }
 
 static BOOL FVWindowSnapshotForProcess(
@@ -579,7 +618,8 @@ static BOOL FVWindowSnapshotForProcess(
     NSString *boundsKey = (__bridge NSString *)kCGWindowBounds;
     NSString *alphaKey = (__bridge NSString *)kCGWindowAlpha;
     FVWindowSnapshot *firstWindowSnapshot = nil;
-    FVWindowSnapshot *firstDisplayCoveringWindowSnapshot = nil;
+    FVWindowSnapshot *matchedWindowSnapshot = nil;
+    FVWindowSnapshot *firstLikelyFullScreenWindowSnapshot = nil;
 
     for (NSDictionary *window in windowList) {
         NSNumber *owner = window[ownerKey];
@@ -591,7 +631,6 @@ static BOOL FVWindowSnapshotForProcess(
 
         if (
             owner.intValue == processIdentifier &&
-            layer.integerValue == 0 &&
             windowNumber != nil &&
             alpha.doubleValue > 0.01 &&
             bounds != nil &&
@@ -602,32 +641,44 @@ static BOOL FVWindowSnapshotForProcess(
             frame.size.width > 40 &&
             frame.size.height > 40
         ) {
+            BOOL likelyFullScreen = FVWindowFrameLikelyFillsAnyDisplay(frame);
+            if (layer.integerValue != 0 && !likelyFullScreen) {
+                continue;
+            }
+
             BOOL matchesFocusedFrame =
                 hasFocusedFrame &&
                 FVRectsLikelyReferToSameWindow(frame, focusedFrame);
             FVWindowSnapshot *snapshot = [[FVWindowSnapshot alloc]
                 initWithWindowNumber:windowNumber.unsignedIntValue
                                 frame:frame
-                           fullScreen:matchesFocusedFrame &&
-                               focusedWindowIsFullScreen];
+                           fullScreen:(
+                               matchesFocusedFrame &&
+                               focusedWindowIsFullScreen
+                           ) || likelyFullScreen];
             if (firstWindowSnapshot == nil) {
                 firstWindowSnapshot = snapshot;
             }
-            if (
-                firstDisplayCoveringWindowSnapshot == nil &&
-                FVWindowFrameCoversAnyDisplay(frame)
-            ) {
-                firstDisplayCoveringWindowSnapshot = snapshot;
+            if (firstLikelyFullScreenWindowSnapshot == nil && likelyFullScreen) {
+                firstLikelyFullScreenWindowSnapshot = snapshot;
             }
             if (matchesFocusedFrame) {
-                *result = snapshot;
-                return YES;
+                matchedWindowSnapshot = snapshot;
+                if (snapshot.isFullScreen) {
+                    *result = snapshot;
+                    return YES;
+                }
             }
         }
     }
 
-    if (firstDisplayCoveringWindowSnapshot != nil) {
-        *result = firstDisplayCoveringWindowSnapshot;
+    if (firstLikelyFullScreenWindowSnapshot != nil) {
+        *result = firstLikelyFullScreenWindowSnapshot;
+        return YES;
+    }
+
+    if (matchedWindowSnapshot != nil) {
+        *result = matchedWindowSnapshot;
         return YES;
     }
 
@@ -982,8 +1033,13 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     if (frontmostHasWindow) {
         NSNumber *frontmostWindowRecord = @(frontmostWindowSnapshot.windowNumber);
         if (visibleWindowSnapshotsByNumber[frontmostWindowRecord] == nil) {
-            [self hideAllOverlayLayers];
-            return;
+            if (frontmostWindowSnapshot.isFullScreen) {
+                visibleWindowSnapshotsByNumber[frontmostWindowRecord] =
+                    frontmostWindowSnapshot;
+            } else {
+                [self hideAllOverlayLayers];
+                return;
+            }
         }
         if (frontmostWindowSnapshot.isFullScreen) {
             [_knownFullScreenWindowNumbers addObject:frontmostWindowRecord];
@@ -1262,7 +1318,16 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
                 [_knownFullScreenWindowNumbers containsObject:topWindowNumber] ||
                 (
                     topWindowSnapshot != nil &&
-                    FVWindowFrameCoversDisplay(topWindowSnapshot.frame, displayIdentifier)
+                    (
+                        FVWindowFrameCoversDisplay(
+                            topWindowSnapshot.frame,
+                            displayIdentifier
+                        ) ||
+                        FVWindowFrameLikelyFillsDisplay(
+                            topWindowSnapshot.frame,
+                            displayIdentifier
+                        )
+                    )
                 )
             ) {
                 [overlay hide];
