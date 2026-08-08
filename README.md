@@ -75,6 +75,8 @@ FocusVeil 启动后常驻菜单栏。菜单中提供以下控制项：
 
 ## 本地构建
 
+### macOS
+
 在仓库根目录运行：
 
 ```bash
@@ -90,14 +92,46 @@ outputs/FocusVeil.dmg
 
 构建脚本会使用系统 clang 编译 Objective C 源码，链接并嵌入 Sparkle 框架，并使用本地临时签名生成应用包。DMG 中包含 `FocusVeil.app` 和 `Applications` 快捷入口，便于用户拖拽安装。临时签名适合个人使用和开发验证。面向其他用户分发时，应使用 Apple Developer 证书完成正式签名和公证。
 
+### Windows
+
+Windows 版源码位于 `Windows/FocusVeil`。在 Windows 环境中打开 PowerShell，运行：
+
+```powershell
+.\Windows\FocusVeil\Scripts\build.ps1
+```
+
+构建完成后会生成：
+
+```text
+outputs\windows\FocusVeil.exe
+```
+
+Windows 版使用原生 Win32 桌面接口实现托盘菜单、窗口识别、多显示器遮罩、分级亮度、登录启动和更新检查。当前更新检查会读取 GitHub Releases 最新版本信息，并由用户选择是否打开发布页下载。
+
+面向普通用户分发 Windows 版时，可以生成安装程序：
+
+```powershell
+.\Windows\FocusVeil\Scripts\buildInstaller.ps1
+```
+
+生成的安装程序位于：
+
+```text
+outputs\windows\FocusVeilSetup.exe
+```
+
+如果没有 Windows 本机构建环境，可以使用 GitHub Actions 生成 Windows 产物。进入仓库的 Actions 页面，运行 `Build Windows` 工作流；构建完成后可下载 `FocusVeilWindows` 产物，其中包含 `FocusVeil.exe` 和 `FocusVeilSetup.exe`。使用 `v` 开头的 Git 标签发布时，工作流会把这两个文件附加到对应 GitHub Release。
+
 ## 项目结构
 
 - `Sources/FocusVeil/main.m`：应用入口、菜单栏交互、窗口识别和遮罩控制逻辑。
 - `Resources/Info.plist`：应用元数据、版本号和最低系统版本。
 - `Resources/AppIcon.icns`：应用图标资源。
 - `docs/images/`：README 中使用的功能示意图。
+- `.github/workflows/windows.yml`：在 GitHub Actions 中构建 Windows 可执行文件和安装程序。
 - `Scripts/build.sh`：本地构建、签名、压缩和 DMG 生成脚本。
 - `Scripts/release.sh`：构建发布产物并生成 Sparkle appcast 的脚本。
+- `Windows/FocusVeil/`：Windows 原生客户端源码、CMake 配置、安装器配置和 PowerShell 构建脚本。
 - `Vendor/Sparkle/`：Sparkle 框架、发布工具和授权文件。
 - `CHANGELOG.md`：面向用户的版本发布说明。
 
