@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <ServiceManagement/ServiceManagement.h>
+#import <Sparkle/Sparkle.h>
 #import <math.h>
 
 static NSString * const FVEnabledKey = @"enabled";
@@ -9,10 +10,6 @@ static NSString * const FVRankedBrightnessEnabledKey = @"rankedBrightnessEnabled
 static NSString * const FVHighlightWindowCountKey = @"highlightWindowCount";
 static NSString * const FVRankedBrightnessCustomizedKey = @"rankedBrightnessCustomized";
 static NSString * const FVGitHubURLString = @"https://github.com/Steirch/FocusVeil";
-static NSString * const FVGitHubReleasesURLString =
-    @"https://github.com/Steirch/FocusVeil/releases";
-static NSString * const FVGitHubLatestReleaseAPIURLString =
-    @"https://api.github.com/repos/Steirch/FocusVeil/releases/latest";
 static const CGFloat FVDefaultDimmingAmount = 0.52;
 static const NSInteger FVMinimumHighlightWindowCount = 1;
 static const NSInteger FVMaximumHighlightWindowCount = 4;
@@ -204,48 +201,6 @@ static CGFloat FVIncrementalDimmingAmount(CGFloat previousAmount, CGFloat target
     }
 
     return (targetAmount - previousAmount) / (1 - previousAmount);
-}
-
-static NSString *FVNormalizedVersionString(NSString *version) {
-    if (![version isKindOfClass:NSString.class]) {
-        return @"0";
-    }
-
-    NSString *trimmed = [version stringByTrimmingCharactersInSet:
-        NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if ([trimmed hasPrefix:@"v"] || [trimmed hasPrefix:@"V"]) {
-        return [trimmed substringFromIndex:1];
-    }
-    return trimmed;
-}
-
-static NSComparisonResult FVCompareVersionStrings(
-    NSString *firstVersion,
-    NSString *secondVersion
-) {
-    NSArray<NSString *> *firstParts =
-        [FVNormalizedVersionString(firstVersion) componentsSeparatedByString:@"."];
-    NSArray<NSString *> *secondParts =
-        [FVNormalizedVersionString(secondVersion) componentsSeparatedByString:@"."];
-    NSUInteger partCount = MAX(firstParts.count, secondParts.count);
-
-    for (NSUInteger index = 0; index < partCount; index++) {
-        NSInteger firstPart = index < firstParts.count
-            ? firstParts[index].integerValue
-            : 0;
-        NSInteger secondPart = index < secondParts.count
-            ? secondParts[index].integerValue
-            : 0;
-
-        if (firstPart > secondPart) {
-            return NSOrderedDescending;
-        }
-        if (firstPart < secondPart) {
-            return NSOrderedAscending;
-        }
-    }
-
-    return NSOrderedSame;
 }
 
 @interface FVWindowSnapshot : NSObject
@@ -1422,11 +1377,13 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 
 @end
 
-@interface FVAppDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
+@interface FVAppDelegate :
+    NSObject <NSApplicationDelegate, NSMenuDelegate, SPUStandardUserDriverDelegate>
 @end
 
 @implementation FVAppDelegate {
     FVFocusController *_focusController;
+    SPUStandardUpdaterController *_updaterController;
     NSStatusItem *_statusItem;
     NSMenuItem *_enabledItem;
     NSMenuItem *_rankedBrightnessItem;
@@ -1440,7 +1397,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     NSMutableArray<NSTextField *> *_rankedBrightnessLabels;
     NSMutableArray<NSTextField *> *_rankedBrightnessValueLabels;
     NSButton *_resetRankedBrightnessButton;
-    BOOL _checkingForUpdates;
+    BOOL _wasPausedBeforeSparkleAlert;
 }
 
 - (instancetype)init {
@@ -1455,6 +1412,9 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    _updaterController = [[SPUStandardUpdaterController alloc]
+        initWithUpdaterDelegate:nil
+             userDriverDelegate:self];
     [self configureStatusItem];
     [_focusController start];
 }
@@ -1513,7 +1473,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     _checkForUpdatesItem = [[NSMenuItem alloc] initWithTitle:@"检查更新"
                                                       action:@selector(checkForUpdates:)
                                                keyEquivalent:@""];
-    _checkForUpdatesItem.target = self;
+    _checkForUpdatesItem.target = _updaterController;
     [menu addItem:_checkForUpdatesItem];
 
     NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:@"关于 FocusVeil"
@@ -1672,10 +1632,8 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
             : NSControlStateValueOff;
     }
 
-    _checkForUpdatesItem.title = _checkingForUpdates
-        ? @"正在检查更新..."
-        : @"检查更新";
-    _checkForUpdatesItem.enabled = !_checkingForUpdates;
+    _checkForUpdatesItem.title = @"检查更新";
+    _checkForUpdatesItem.enabled = _updaterController.updater.canCheckForUpdates;
 }
 
 - (void)updateRankedBrightnessControlsWithCount:(NSInteger)highlightWindowCount {
@@ -1761,138 +1719,6 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     [self updateMenuState];
 }
 
-- (void)checkForUpdates:(id)sender {
-    if (_checkingForUpdates) {
-        return;
-    }
-
-    NSURL *url = [NSURL URLWithString:FVGitHubLatestReleaseAPIURLString];
-    if (url == nil) {
-        [self showAlertWithTitle:@"无法检查更新"
-                         message:@"更新地址无效。"];
-        return;
-    }
-
-    _checkingForUpdates = YES;
-    [self updateMenuState];
-
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-    request.timeoutInterval = 12;
-    [request setValue:@"FocusVeil" forHTTPHeaderField:@"User-Agent"];
-    [request setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
-
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
-        dataTaskWithRequest:request
-          completionHandler:^(
-              NSData *data,
-              NSURLResponse *response,
-              NSError *error
-          ) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self->_checkingForUpdates = NO;
-            [self updateMenuState];
-            [self handleUpdateCheckData:data response:response error:error];
-        });
-    }];
-    [task resume];
-}
-
-- (void)handleUpdateCheckData:(NSData *)data
-                     response:(NSURLResponse *)response
-                        error:(NSError *)error {
-    if (error != nil) {
-        [self showAlertWithTitle:@"检查更新失败"
-                         message:error.localizedDescription ?: @"网络请求失败。"];
-        return;
-    }
-
-    if ([response isKindOfClass:NSHTTPURLResponse.class]) {
-        NSInteger statusCode = ((NSHTTPURLResponse *)response).statusCode;
-        if (statusCode < 200 || statusCode >= 300) {
-            [self showAlertWithTitle:@"检查更新失败"
-                             message:[NSString stringWithFormat:
-                                 @"GitHub 返回状态码 %ld。",
-                                 (long)statusCode
-                             ]];
-            return;
-        }
-    }
-
-    if (data.length == 0) {
-        [self showAlertWithTitle:@"检查更新失败"
-                         message:@"GitHub 未返回版本信息。"];
-        return;
-    }
-
-    NSError *jsonError = nil;
-    id json = [NSJSONSerialization JSONObjectWithData:data
-                                             options:0
-                                               error:&jsonError];
-    if (![json isKindOfClass:NSDictionary.class]) {
-        [self showAlertWithTitle:@"检查更新失败"
-                         message:jsonError.localizedDescription ?:
-                             @"版本信息格式无效。"];
-        return;
-    }
-
-    NSDictionary *release = (NSDictionary *)json;
-    id tagValue = release[@"tag_name"];
-    id htmlURLValue = release[@"html_url"];
-    NSString *latestVersion = [tagValue isKindOfClass:NSString.class]
-        ? FVNormalizedVersionString((NSString *)tagValue)
-        : @"";
-    NSString *releaseURLString = [htmlURLValue isKindOfClass:NSString.class]
-        ? (NSString *)htmlURLValue
-        : FVGitHubReleasesURLString;
-
-    if (latestVersion.length == 0) {
-        [self showAlertWithTitle:@"检查更新失败"
-                         message:@"GitHub Release 缺少版本号。"];
-        return;
-    }
-
-    NSString *currentVersion = FVNormalizedVersionString(
-        [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]
-            ?: @"0"
-    );
-
-    if (FVCompareVersionStrings(latestVersion, currentVersion) == NSOrderedDescending) {
-        [self showUpdateAvailableWithCurrentVersion:currentVersion
-                                      latestVersion:latestVersion
-                                   releaseURLString:releaseURLString];
-        return;
-    }
-
-    [self showInformationWithTitle:@"已是最新版本"
-                           message:[NSString stringWithFormat:
-                               @"当前版本：%@\n最新版本：%@",
-                               currentVersion,
-                               latestVersion
-                           ]];
-}
-
-- (void)showUpdateAvailableWithCurrentVersion:(NSString *)currentVersion
-                                latestVersion:(NSString *)latestVersion
-                             releaseURLString:(NSString *)releaseURLString {
-    NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"发现新版本";
-    alert.informativeText = [NSString stringWithFormat:
-        @"当前版本：%@\n最新版本：%@\n\n打开 GitHub Releases 下载最新 DMG。",
-        currentVersion,
-        latestVersion
-    ];
-    alert.alertStyle = NSAlertStyleInformational;
-    [alert addButtonWithTitle:@"打开下载页"];
-    [alert addButtonWithTitle:@"稍后"];
-
-    if ([self runPausedAlert:alert] == NSAlertFirstButtonReturn) {
-        NSURL *releaseURL = [NSURL URLWithString:releaseURLString];
-        if (releaseURL) {
-            [NSWorkspace.sharedWorkspace openURL:releaseURL];
-        }
-    }
-}
-
 - (void)showInformationWithTitle:(NSString *)title message:(NSString *)message {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = title;
@@ -1908,6 +1734,15 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     NSModalResponse response = [alert runModal];
     _focusController.paused = wasPaused;
     return response;
+}
+
+- (void)standardUserDriverWillShowModalAlert {
+    _wasPausedBeforeSparkleAlert = _focusController.isPaused;
+    _focusController.paused = YES;
+}
+
+- (void)standardUserDriverDidShowModalAlert {
+    _focusController.paused = _wasPausedBeforeSparkleAlert;
 }
 
 - (void)showAbout:(id)sender {

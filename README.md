@@ -31,7 +31,7 @@ FocusVeil 启动后常驻菜单栏。用户可以直接启用或关闭背景压�
 - 支持多个显示器和全屏空间，每个显示器独立保留最近活跃窗口。
 - 支持调节背景压暗强度。
 - 支持分级亮度，让最近活跃的历史窗口按顺序保留不同亮度。
-- 支持从菜单栏检查 GitHub Releases 中的最新版本。
+- 支持通过 Sparkle 从菜单栏检查、下载并安装新版本。
 - 支持登录时启动。
 - 不截屏、不录屏、不保存窗口内容。
 
@@ -66,12 +66,12 @@ FocusVeil 启动后常驻菜单栏。菜单中提供以下控制项：
 - `启用分级亮度`：让最近活跃的历史窗口保留不同亮度。
 - `历史高亮窗口`：设置当前窗口之外需要保留的历史窗口数量。
 - `分级亮度`：分别调整各个历史层级相对于背景区域的亮度。
-- `检查更新`：读取 GitHub Releases 最新版本信息，发现新版本时打开下载页。
+- `检查更新`：读取 Sparkle 更新源，发现新版本后在应用内完成下载、验证、安装和重启。
 - `登录时启动`：控制应用是否随当前用户登录自动启动。
 
 多显示器环境中，每个显示器会维护自己的当前窗口。例如外接显示器播放视频时，内置显示器切换到聊天窗口不会改变外接显示器的视频亮度。启用分级亮度后，历史窗口也会按显示器分别计算，避免不同屏幕之间互相影响。
 
-检查更新功能不会直接修改本机应用。发布新版本后，用户需要在 FocusVeil 菜单中选择 `检查更新`，再从打开的 GitHub Releases 页面下载新版 DMG 并替换本地应用。若需要应用自动下载、替换和重启，后续应接入 Sparkle 等成熟更新框架，并配合正式签名与公证流程。
+检查更新功能使用 Sparkle 读取 GitHub Releases 中公开托管的 `appcast.xml`。发布新版本后，应用会校验更新包签名，并在用户确认后替换本机应用。后台自动检查默认开启，检查间隔为一天。
 
 ## 本地构建
 
@@ -88,7 +88,7 @@ outputs/FocusVeil.zip
 outputs/FocusVeil.dmg
 ```
 
-构建脚本会使用系统 clang 编译 Objective C 源码，并使用本地临时签名生成应用包。DMG 中包含 `FocusVeil.app` 和 `Applications` 快捷入口，便于用户拖拽安装。临时签名适合个人使用和开发验证。面向其他用户分发时，应使用 Apple Developer 证书完成正式签名和公证。
+构建脚本会使用系统 clang 编译 Objective C 源码，链接并嵌入 Sparkle 框架，并使用本地临时签名生成应用包。DMG 中包含 `FocusVeil.app` 和 `Applications` 快捷入口，便于用户拖拽安装。临时签名适合个人使用和开发验证。面向其他用户分发时，应使用 Apple Developer 证书完成正式签名和公证。
 
 ## 项目结构
 
@@ -97,6 +97,8 @@ outputs/FocusVeil.dmg
 - `Resources/AppIcon.icns`：应用图标资源。
 - `docs/images/`：README 中使用的功能示意图。
 - `Scripts/build.sh`：本地构建、签名、压缩和 DMG 生成脚本。
+- `Scripts/release.sh`：构建发布产物并生成 Sparkle appcast 的脚本。
+- `Vendor/Sparkle/`：Sparkle 框架、发布工具和授权文件。
 - `CHANGELOG.md`：面向用户的版本发布说明。
 
 ## 技术实现
@@ -111,7 +113,7 @@ FocusVeil 使用 macOS 辅助功能接口获取当前活动窗口的几何信息
 
 - 更新 `Resources/Info.plist` 中的 `CFBundleShortVersionString` 和 `CFBundleVersion`。
 - 更新 `CHANGELOG.md`，说明用户可感知的变化、影响范围和验证建议。
-- 运行 `zsh Scripts/build.sh` 生成新的 `outputs/FocusVeil.zip` 和 `outputs/FocusVeil.dmg`。
-- 使用版本号创建 Git 标签，并将 DMG 上传到 GitHub Releases，必要时同时保留 zip 作为备用下载。
+- 运行 `zsh Scripts/release.sh` 生成新的 `outputs/FocusVeil.zip`、`outputs/FocusVeil.dmg`、`outputs/appcast.xml` 和发布说明。
+- 使用版本号创建 Git 标签，并将 DMG、zip、appcast 和发布说明上传到 GitHub Releases。
 
 仓库只保存源码、资源文件、构建脚本和项目说明。构建产物、压缩包、系统元数据、模块缓存以及 Xcode 用户状态文件不纳入版本控制。

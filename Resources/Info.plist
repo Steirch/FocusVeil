@@ -17,14 +17,26 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.10</string>
+    <string>0.1.11</string>
     <key>CFBundleVersion</key>
-    <string>11</string>
+    <string>12</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUFeedURL</key>
+    <string>https://github.com/Steirch/FocusVeil/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>I49IyYl6xyoPPLOMmSbjun3KHAuLR90jZns3KVF/HMI=</string>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>

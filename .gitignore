@@ -8,3 +8,10 @@ DerivedData/
 *.xcuserstate
 Resources/AppIcon-source-normalized.png
 Resources/AppIcon-source.png
+!Vendor/
+!Vendor/Sparkle/
+!Vendor/Sparkle/Sparkle.framework/
+!Vendor/Sparkle/Sparkle.framework/Versions/
+!Vendor/Sparkle/Sparkle.framework/Versions/B/
+!Vendor/Sparkle/Sparkle.framework/Versions/B/Updater.app/
+!Vendor/Sparkle/Sparkle.framework/Versions/B/Updater.app/**

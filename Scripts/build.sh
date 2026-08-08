@@ -14,7 +14,10 @@ DMG_STAGING_APP_DIR="${DMG_STAGING_DIR}/FocusVeil.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
 MODULE_CACHE_DIR="${PROJECT_DIR}/work/clang-module-cache"
+SPARKLE_DIR="${PROJECT_DIR}/Vendor/Sparkle"
+SPARKLE_FRAMEWORK_DIR="${SPARKLE_DIR}/Sparkle.framework"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 CLANG_PATH="$(xcrun --find clang)"
 
@@ -22,7 +25,17 @@ trap 'rm -rf "${BUILD_DIR}"' EXIT
 
 cd "${PROJECT_DIR}"
 
-mkdir -p "${OUTPUT_DIR}" "${MACOS_DIR}" "${RESOURCES_DIR}" "${MODULE_CACHE_DIR}"
+if [[ ! -d "${SPARKLE_FRAMEWORK_DIR}" ]]; then
+    echo "Missing ${SPARKLE_FRAMEWORK_DIR}" >&2
+    exit 1
+fi
+
+mkdir -p \
+    "${OUTPUT_DIR}" \
+    "${MACOS_DIR}" \
+    "${RESOURCES_DIR}" \
+    "${FRAMEWORKS_DIR}" \
+    "${MODULE_CACHE_DIR}"
 
 CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" \
 "${CLANG_PATH}" \
@@ -31,7 +44,10 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" \
     -Os \
     -mmacosx-version-min=13.0 \
     -isysroot "${SDK_PATH}" \
+    -F "${SPARKLE_DIR}" \
     "Sources/FocusVeil/main.m" \
+    -Wl,-rpath,@executable_path/../Frameworks \
+    -framework Sparkle \
     -framework AppKit \
     -framework ApplicationServices \
     -framework ServiceManagement \
@@ -39,6 +55,7 @@ CLANG_MODULE_CACHE_PATH="${MODULE_CACHE_DIR}" \
 
 install -m 644 "Resources/Info.plist" "${CONTENTS_DIR}/Info.plist"
 install -m 644 "Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
+ditto --norsrc "${SPARKLE_FRAMEWORK_DIR}" "${FRAMEWORKS_DIR}/Sparkle.framework"
 
 xattr -cr "${APP_DIR}"
 codesign --force --deep --sign - "${APP_DIR}"
