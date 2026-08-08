@@ -251,37 +251,33 @@ static NSComparisonResult FVCompareVersionStrings(
 @interface FVWindowSnapshot : NSObject
 @property(nonatomic, readonly) CGWindowID windowNumber;
 @property(nonatomic, readonly) CGRect frame;
-- (instancetype)initWithWindowNumber:(CGWindowID)windowNumber frame:(CGRect)frame;
+@property(nonatomic, readonly, getter=isFullScreen) BOOL fullScreen;
+- (instancetype)initWithWindowNumber:(CGWindowID)windowNumber
+                               frame:(CGRect)frame
+                          fullScreen:(BOOL)fullScreen;
 @end
 
 @implementation FVWindowSnapshot
 
-- (instancetype)initWithWindowNumber:(CGWindowID)windowNumber frame:(CGRect)frame {
+- (instancetype)initWithWindowNumber:(CGWindowID)windowNumber
+                               frame:(CGRect)frame
+                          fullScreen:(BOOL)fullScreen {
     self = [super init];
     if (self) {
         _windowNumber = windowNumber;
         _frame = frame;
+        _fullScreen = fullScreen;
     }
     return self;
 }
 
 @end
 
-static BOOL FVAccessibilityWindowFrame(pid_t processIdentifier, CGRect *result) {
-    AXUIElementRef applicationElement = AXUIElementCreateApplication(processIdentifier);
-    CFTypeRef windowReference = NULL;
-    AXError windowError = AXUIElementCopyAttributeValue(
-        applicationElement,
-        kAXFocusedWindowAttribute,
-        &windowReference
-    );
-    CFRelease(applicationElement);
-
-    if (windowError != kAXErrorSuccess || windowReference == NULL) {
-        return NO;
-    }
-
-    AXUIElementRef windowElement = (AXUIElementRef)windowReference;
+static BOOL FVAccessibilityWindowFrameAndFullScreen(
+    AXUIElementRef windowElement,
+    CGRect *frameResult,
+    BOOL *fullScreenResult
+) {
     CFTypeRef positionReference = NULL;
     CFTypeRef sizeReference = NULL;
 
@@ -295,7 +291,6 @@ static BOOL FVAccessibilityWindowFrame(pid_t processIdentifier, CGRect *result) 
         kAXSizeAttribute,
         &sizeReference
     );
-    CFRelease(windowReference);
 
     if (
         positionError != kAXErrorSuccess ||
@@ -329,8 +324,125 @@ static BOOL FVAccessibilityWindowFrame(pid_t processIdentifier, CGRect *result) 
         return NO;
     }
 
-    *result = CGRectMake(position.x, position.y, size.width, size.height);
+    BOOL fullScreen = NO;
+    CFTypeRef fullScreenReference = NULL;
+    AXError fullScreenError = AXUIElementCopyAttributeValue(
+        windowElement,
+        CFSTR("AXFullScreen"),
+        &fullScreenReference
+    );
+    if (fullScreenError == kAXErrorSuccess && fullScreenReference != NULL) {
+        if (CFGetTypeID(fullScreenReference) == CFBooleanGetTypeID()) {
+            fullScreen = CFBooleanGetValue((CFBooleanRef)fullScreenReference);
+        }
+        CFRelease(fullScreenReference);
+    }
+
+    *frameResult = CGRectMake(position.x, position.y, size.width, size.height);
+    *fullScreenResult = fullScreen;
     return YES;
+}
+
+static BOOL FVAccessibilityPreferredWindowFrame(
+    pid_t processIdentifier,
+    CGRect *frameResult,
+    BOOL *fullScreenResult
+) {
+    AXUIElementRef applicationElement = AXUIElementCreateApplication(processIdentifier);
+    CFTypeRef windowReference = NULL;
+    AXError windowError = AXUIElementCopyAttributeValue(
+        applicationElement,
+        kAXFocusedWindowAttribute,
+        &windowReference
+    );
+
+    if (windowError == kAXErrorSuccess && windowReference != NULL) {
+        AXUIElementRef windowElement = (AXUIElementRef)windowReference;
+        BOOL valid = FVAccessibilityWindowFrameAndFullScreen(
+            windowElement,
+            frameResult,
+            fullScreenResult
+        );
+        CFRelease(windowReference);
+        if (valid) {
+            CFRelease(applicationElement);
+            return YES;
+        }
+    }
+
+    CFTypeRef windowsReference = NULL;
+    AXError windowsError = AXUIElementCopyAttributeValue(
+        applicationElement,
+        kAXWindowsAttribute,
+        &windowsReference
+    );
+
+    if (
+        windowsError != kAXErrorSuccess ||
+        windowsReference == NULL ||
+        CFGetTypeID(windowsReference) != CFArrayGetTypeID()
+    ) {
+        if (windowsReference) {
+            CFRelease(windowsReference);
+        }
+        CFRelease(applicationElement);
+        return NO;
+    }
+
+    NSArray *windows = CFBridgingRelease(windowsReference);
+    CFRelease(applicationElement);
+
+    for (id window in windows) {
+        AXUIElementRef windowElement = (__bridge AXUIElementRef)window;
+        CGRect frame = CGRectZero;
+        BOOL fullScreen = NO;
+        if (
+            FVAccessibilityWindowFrameAndFullScreen(
+                windowElement,
+                &frame,
+                &fullScreen
+            ) &&
+            fullScreen
+        ) {
+            *frameResult = frame;
+            *fullScreenResult = YES;
+            return YES;
+        }
+    }
+
+    return NO;
+}
+
+static BOOL FVApplicationIsSystemUserInterface(NSRunningApplication *application) {
+    if (application == nil) {
+        return NO;
+    }
+
+    static NSSet<NSString *> *systemUserInterfaceBundleIdentifiers;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        systemUserInterfaceBundleIdentifiers = [NSSet setWithArray:@[
+            @"com.apple.controlcenter",
+            @"com.apple.ControlCenter",
+            @"com.apple.dock",
+            @"com.apple.loginwindow",
+            @"com.apple.notificationcenterui",
+            @"com.apple.Siri",
+            @"com.apple.Spotlight",
+            @"com.apple.systemuiserver",
+            @"com.apple.WindowManager"
+        ]];
+    });
+
+    NSString *bundleIdentifier = application.bundleIdentifier;
+    if (
+        bundleIdentifier != nil &&
+        [systemUserInterfaceBundleIdentifiers containsObject:bundleIdentifier]
+    ) {
+        return YES;
+    }
+
+    return application.activationPolicy == NSApplicationActivationPolicyProhibited;
 }
 
 static BOOL FVRectApproximatelyEqual(CGRect first, CGRect second) {
@@ -347,6 +459,22 @@ static CGFloat FVRectArea(CGRect rect) {
     }
 
     return CGRectGetWidth(rect) * CGRectGetHeight(rect);
+}
+
+static BOOL FVRectsLikelyReferToSameWindow(CGRect first, CGRect second) {
+    if (FVRectApproximatelyEqual(first, second)) {
+        return YES;
+    }
+
+    CGFloat firstArea = FVRectArea(first);
+    CGFloat secondArea = FVRectArea(second);
+    CGFloat largerArea = MAX(firstArea, secondArea);
+    if (largerArea <= 0) {
+        return NO;
+    }
+
+    CGFloat intersectionArea = FVRectArea(CGRectIntersection(first, second));
+    return intersectionArea / largerArea >= 0.82;
 }
 
 static BOOL FVWindowFrameIsSubstantiallyVisible(CGRect frame) {
@@ -419,12 +547,22 @@ static BOOL FVWindowFrameCoversDisplay(CGRect frame, NSNumber *displayIdentifier
         && CGRectGetMaxY(frame) >= CGRectGetMaxY(displayBounds) - edgeTolerance;
 }
 
+static BOOL FVWindowFrameCoversAnyDisplay(CGRect frame) {
+    NSNumber *displayIdentifier = FVDisplayIdentifierWithLargestIntersection(frame);
+    return FVWindowFrameCoversDisplay(frame, displayIdentifier);
+}
+
 static BOOL FVWindowSnapshotForProcess(
     pid_t processIdentifier,
     FVWindowSnapshot **result
 ) {
     CGRect focusedFrame = CGRectZero;
-    BOOL hasFocusedFrame = FVAccessibilityWindowFrame(processIdentifier, &focusedFrame);
+    BOOL focusedWindowIsFullScreen = NO;
+    BOOL hasFocusedFrame = FVAccessibilityPreferredWindowFrame(
+        processIdentifier,
+        &focusedFrame,
+        &focusedWindowIsFullScreen
+    );
 
     CFArrayRef windowListReference = CGWindowListCopyWindowInfo(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
@@ -441,6 +579,7 @@ static BOOL FVWindowSnapshotForProcess(
     NSString *boundsKey = (__bridge NSString *)kCGWindowBounds;
     NSString *alphaKey = (__bridge NSString *)kCGWindowAlpha;
     FVWindowSnapshot *firstWindowSnapshot = nil;
+    FVWindowSnapshot *firstDisplayCoveringWindowSnapshot = nil;
 
     for (NSDictionary *window in windowList) {
         NSNumber *owner = window[ownerKey];
@@ -463,17 +602,33 @@ static BOOL FVWindowSnapshotForProcess(
             frame.size.width > 40 &&
             frame.size.height > 40
         ) {
+            BOOL matchesFocusedFrame =
+                hasFocusedFrame &&
+                FVRectsLikelyReferToSameWindow(frame, focusedFrame);
             FVWindowSnapshot *snapshot = [[FVWindowSnapshot alloc]
                 initWithWindowNumber:windowNumber.unsignedIntValue
-                                frame:frame];
+                                frame:frame
+                           fullScreen:matchesFocusedFrame &&
+                               focusedWindowIsFullScreen];
             if (firstWindowSnapshot == nil) {
                 firstWindowSnapshot = snapshot;
             }
-            if (hasFocusedFrame && FVRectApproximatelyEqual(frame, focusedFrame)) {
+            if (
+                firstDisplayCoveringWindowSnapshot == nil &&
+                FVWindowFrameCoversAnyDisplay(frame)
+            ) {
+                firstDisplayCoveringWindowSnapshot = snapshot;
+            }
+            if (matchesFocusedFrame) {
                 *result = snapshot;
                 return YES;
             }
         }
+    }
+
+    if (firstDisplayCoveringWindowSnapshot != nil) {
+        *result = firstDisplayCoveringWindowSnapshot;
+        return YES;
     }
 
     if (firstWindowSnapshot != nil) {
@@ -510,9 +665,12 @@ static NSArray<FVWindowSnapshot *> *FVVisibleNormalWindowSnapshotsExcludingProce
         NSNumber *alpha = window[alphaKey];
         NSDictionary *bounds = window[boundsKey];
         CGRect frame = CGRectZero;
+        NSRunningApplication *ownerApplication = [NSRunningApplication
+            runningApplicationWithProcessIdentifier:owner.intValue];
 
         if (
             owner.intValue != processIdentifier &&
+            !FVApplicationIsSystemUserInterface(ownerApplication) &&
             layer.integerValue == 0 &&
             windowNumber != nil &&
             alpha.doubleValue > 0.01 &&
@@ -527,7 +685,8 @@ static NSArray<FVWindowSnapshot *> *FVVisibleNormalWindowSnapshotsExcludingProce
         ) {
             FVWindowSnapshot *snapshot = [[FVWindowSnapshot alloc]
                 initWithWindowNumber:windowNumber.unsignedIntValue
-                                frame:frame];
+                                frame:frame
+                           fullScreen:NO];
             [windowSnapshots addObject:snapshot];
         }
     }
@@ -683,6 +842,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     NSMutableArray<NSNumber *> *_overlayDisplayIdentifiers;
     NSMutableDictionary<NSNumber *, NSMutableArray<NSNumber *> *>
         *_recentWindowNumbersByDisplayIdentifier;
+    NSMutableSet<NSNumber *> *_knownFullScreenWindowNumbers;
     NSTimer *_refreshTimer;
     pid_t _ownProcessIdentifier;
 }
@@ -693,6 +853,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
         _overlayLayers = [NSMutableArray array];
         _overlayDisplayIdentifiers = [NSMutableArray array];
         _recentWindowNumbersByDisplayIdentifier = [NSMutableDictionary dictionary];
+        _knownFullScreenWindowNumbers = [NSMutableSet set];
         _ownProcessIdentifier = NSProcessInfo.processInfo.processIdentifier;
         _paused = NO;
     }
@@ -789,11 +950,13 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
         NSWorkspace.sharedWorkspace.frontmostApplication;
     BOOL hasExternalFrontmostApplication = frontmostApplication
         && frontmostApplication.processIdentifier != _ownProcessIdentifier;
+    BOOL frontmostIsSystemUserInterface =
+        FVApplicationIsSystemUserInterface(frontmostApplication);
     BOOL frontmostHasWindow = NO;
     BOOL frontmostIsFinderDesktop = NO;
     FVWindowSnapshot *frontmostWindowSnapshot = nil;
 
-    if (hasExternalFrontmostApplication) {
+    if (hasExternalFrontmostApplication && !frontmostIsSystemUserInterface) {
         FVWindowSnapshot *windowSnapshot = nil;
         if (
             FVWindowSnapshotForProcess(
@@ -811,8 +974,10 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 
     NSArray<FVWindowSnapshot *> *visibleWindowSnapshots =
         FVVisibleNormalWindowSnapshotsExcludingProcess(_ownProcessIdentifier);
-    NSDictionary<NSNumber *, FVWindowSnapshot *> *visibleWindowSnapshotsByNumber =
-        FVWindowSnapshotsByWindowNumber(visibleWindowSnapshots);
+    NSMutableDictionary<NSNumber *, FVWindowSnapshot *> *visibleWindowSnapshotsByNumber =
+        [FVWindowSnapshotsByWindowNumber(visibleWindowSnapshots) mutableCopy];
+    [self pruneKnownFullScreenWindowNumbersWithVisibleWindowSnapshotsByNumber:
+        visibleWindowSnapshotsByNumber];
 
     if (frontmostHasWindow) {
         NSNumber *frontmostWindowRecord = @(frontmostWindowSnapshot.windowNumber);
@@ -820,12 +985,20 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
             [self hideAllOverlayLayers];
             return;
         }
+        if (frontmostWindowSnapshot.isFullScreen) {
+            [_knownFullScreenWindowNumbers addObject:frontmostWindowRecord];
+        } else {
+            [_knownFullScreenWindowNumbers removeObject:frontmostWindowRecord];
+        }
+        visibleWindowSnapshotsByNumber[frontmostWindowRecord] =
+            frontmostWindowSnapshot;
     }
 
     if (
         !frontmostHasWindow &&
         !frontmostIsFinderDesktop &&
-        hasExternalFrontmostApplication
+        hasExternalFrontmostApplication &&
+        !frontmostIsSystemUserInterface
     ) {
         [self promoteTopVisibleWindowSnapshotsForActiveDisplays:visibleWindowSnapshots];
     }
@@ -852,6 +1025,13 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 
     [self applyOverlayLayersWithVisibleWindowSnapshotsByNumber:
         visibleWindowSnapshotsByNumber];
+}
+
+- (void)pruneKnownFullScreenWindowNumbersWithVisibleWindowSnapshotsByNumber:
+    (NSDictionary<NSNumber *, FVWindowSnapshot *> *)visibleWindowSnapshotsByNumber {
+    NSSet<NSNumber *> *visibleWindowNumbers =
+        [NSSet setWithArray:visibleWindowSnapshotsByNumber.allKeys];
+    [_knownFullScreenWindowNumbers intersectSet:visibleWindowNumbers];
 }
 
 - (NSMutableArray<NSNumber *> *)recentWindowNumbersForDisplayIdentifier:
@@ -1079,8 +1259,11 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
             FVWindowSnapshot *topWindowSnapshot =
                 visibleWindowSnapshotsByNumber[topWindowNumber];
             if (
-                topWindowSnapshot != nil &&
-                FVWindowFrameCoversDisplay(topWindowSnapshot.frame, displayIdentifier)
+                [_knownFullScreenWindowNumbers containsObject:topWindowNumber] ||
+                (
+                    topWindowSnapshot != nil &&
+                    FVWindowFrameCoversDisplay(topWindowSnapshot.frame, displayIdentifier)
+                )
             ) {
                 [overlay hide];
                 continue;
