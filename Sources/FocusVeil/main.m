@@ -674,17 +674,22 @@ static NSArray<FVWindowSnapshot *> *FVVisibleNormalWindowSnapshotsExcludingProce
         NSRunningApplication *ownerApplication = [NSRunningApplication
             runningApplicationWithProcessIdentifier:owner.intValue];
 
+        BOOL hasFrame =
+            bounds != nil &&
+            CGRectMakeWithDictionaryRepresentation(
+                (__bridge CFDictionaryRef)bounds,
+                &frame
+            );
+        if (!hasFrame) {
+            continue;
+        }
+
         if (
             owner.intValue != processIdentifier &&
             !FVApplicationIsSystemUserInterface(ownerApplication) &&
             layer.integerValue == 0 &&
             windowNumber != nil &&
             alpha.doubleValue > 0.01 &&
-            bounds != nil &&
-            CGRectMakeWithDictionaryRepresentation(
-                (__bridge CFDictionaryRef)bounds,
-                &frame
-            ) &&
             frame.size.width > 40 &&
             frame.size.height > 40 &&
             FVWindowFrameIsSubstantiallyVisible(frame)
@@ -764,6 +769,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
         self.opaque = NO;
         self.hasShadow = NO;
         self.ignoresMouseEvents = YES;
+        self.accessibilityElement = NO;
         self.hidesOnDeactivate = NO;
         self.releasedWhenClosed = NO;
         self.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces
@@ -833,6 +839,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 @interface FVFocusController : NSObject
 @property(nonatomic, readonly) BOOL accessibilityTrusted;
 @property(nonatomic, getter=isPaused) BOOL paused;
+@property(nonatomic, getter=isInterfaceSuspended) BOOL interfaceSuspended;
 - (void)start;
 - (void)stop;
 - (void)setEnabled:(BOOL)enabled;
@@ -851,6 +858,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     NSMutableSet<NSNumber *> *_knownFullScreenWindowNumbers;
     NSTimer *_refreshTimer;
     pid_t _ownProcessIdentifier;
+    BOOL _interfaceSuspended;
 }
 
 - (instancetype)init {
@@ -910,6 +918,15 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     [self refresh:nil];
 }
 
+- (BOOL)isInterfaceSuspended {
+    return _interfaceSuspended;
+}
+
+- (void)setInterfaceSuspended:(BOOL)interfaceSuspended {
+    _interfaceSuspended = interfaceSuspended;
+    [self refresh:nil];
+}
+
 - (void)setDimmingAmount:(CGFloat)amount {
     FVSetDimmingAmount(amount);
     [self refresh:nil];
@@ -947,7 +964,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 }
 
 - (void)refresh:(NSTimer *)timer {
-    if (!FVIsEnabled() || self.isPaused) {
+    if (!FVIsEnabled() || self.isPaused || self.isInterfaceSuspended) {
         [self hideAllOverlayLayers];
         return;
     }
@@ -980,6 +997,7 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
 
     NSArray<FVWindowSnapshot *> *visibleWindowSnapshots =
         FVVisibleNormalWindowSnapshotsExcludingProcess(_ownProcessIdentifier);
+
     NSMutableDictionary<NSNumber *, FVWindowSnapshot *> *visibleWindowSnapshotsByNumber =
         [FVWindowSnapshotsByWindowNumber(visibleWindowSnapshots) mutableCopy];
     [self pruneKnownFullScreenWindowNumbersWithVisibleWindowSnapshotsByNumber:
@@ -1386,18 +1404,21 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     SPUStandardUpdaterController *_updaterController;
     NSStatusItem *_statusItem;
     NSMenuItem *_enabledItem;
-    NSMenuItem *_rankedBrightnessItem;
-    NSMenuItem *_highlightWindowCountItem;
-    NSMenuItem *_rankedBrightnessControlsItem;
-    NSMenuItem *_permissionItem;
-    NSMenuItem *_launchAtLoginItem;
-    NSMenuItem *_checkForUpdatesItem;
     NSSlider *_intensitySlider;
+    NSWindow *_settingsWindow;
+    NSButton *_rankedBrightnessButton;
+    NSPopUpButton *_highlightWindowCountPopUp;
+    NSButton *_resetRankedBrightnessButton;
+    NSTextField *_permissionStatusLabel;
+    NSButton *_accessibilitySettingsButton;
+    NSButton *_launchAtLoginButton;
+    NSButton *_checkForUpdatesButton;
     NSMutableArray<NSSlider *> *_rankedBrightnessSliders;
     NSMutableArray<NSTextField *> *_rankedBrightnessLabels;
     NSMutableArray<NSTextField *> *_rankedBrightnessValueLabels;
-    NSButton *_resetRankedBrightnessButton;
     BOOL _wasPausedBeforeSparkleAlert;
+    BOOL _wasInterfaceSuspendedBeforeStatusMenu;
+    BOOL _statusMenuOpen;
 }
 
 - (instancetype)init {
@@ -1443,44 +1464,11 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     [menu addItem:[self intensityMenuItem]];
     [menu addItem:NSMenuItem.separatorItem];
 
-    _rankedBrightnessItem = [[NSMenuItem alloc] initWithTitle:@"启用分级亮度"
-                                                       action:@selector(toggleRankedBrightness:)
-                                                keyEquivalent:@""];
-    _rankedBrightnessItem.target = self;
-    [menu addItem:_rankedBrightnessItem];
-
-    _highlightWindowCountItem = [self highlightWindowCountMenuItem];
-    [menu addItem:_highlightWindowCountItem];
-
-    _rankedBrightnessControlsItem = [self rankedBrightnessControlsMenuItem];
-    [menu addItem:_rankedBrightnessControlsItem];
-    [menu addItem:NSMenuItem.separatorItem];
-
-    _permissionItem = [[NSMenuItem alloc] initWithTitle:@"辅助功能权限"
-                                                  action:@selector(openAccessibilitySettings:)
-                                           keyEquivalent:@""];
-    _permissionItem.target = self;
-    [menu addItem:_permissionItem];
-
-    _launchAtLoginItem = [[NSMenuItem alloc] initWithTitle:@"登录时启动"
-                                                    action:@selector(toggleLaunchAtLogin:)
-                                             keyEquivalent:@""];
-    _launchAtLoginItem.target = self;
-    [menu addItem:_launchAtLoginItem];
-
-    [menu addItem:NSMenuItem.separatorItem];
-
-    _checkForUpdatesItem = [[NSMenuItem alloc] initWithTitle:@"检查更新"
-                                                      action:@selector(checkForUpdates:)
-                                               keyEquivalent:@""];
-    _checkForUpdatesItem.target = _updaterController;
-    [menu addItem:_checkForUpdatesItem];
-
-    NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:@"关于 FocusVeil"
-                                                       action:@selector(showAbout:)
-                                                keyEquivalent:@""];
-    aboutItem.target = self;
-    [menu addItem:aboutItem];
+    NSMenuItem *settingsItem = [[NSMenuItem alloc] initWithTitle:@"打开设置"
+                                                          action:@selector(showSettings:)
+                                                   keyEquivalent:@","];
+    settingsItem.target = self;
+    [menu addItem:settingsItem];
 
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"退出 FocusVeil"
                                                       action:@selector(quitApplication:)
@@ -1514,53 +1502,97 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     return menuItem;
 }
 
-- (NSMenuItem *)highlightWindowCountMenuItem {
-    NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:@"历史高亮窗口"
-                                                     action:nil
-                                              keyEquivalent:@""];
-    NSMenu *submenu = [[NSMenu alloc] initWithTitle:@"历史高亮窗口"];
+- (NSTextField *)settingsLabelWithString:(NSString *)string
+                                   frame:(NSRect)frame
+                                    font:(NSFont *)font {
+    NSTextField *label = [NSTextField labelWithString:string];
+    label.frame = frame;
+    label.font = font;
+    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    return label;
+}
 
+- (NSBox *)settingsSeparatorWithY:(CGFloat)y width:(CGFloat)width {
+    NSBox *separator = [[NSBox alloc] initWithFrame:NSMakeRect(24, y, width - 48, 1)];
+    separator.boxType = NSBoxSeparator;
+    return separator;
+}
+
+- (void)configureSettingsWindowIfNeeded {
+    if (_settingsWindow != nil) {
+        return;
+    }
+
+    CGFloat contentWidth = 480;
+    CGFloat contentHeight = 520;
+    NSRect contentRect = NSMakeRect(0, 0, contentWidth, contentHeight);
+    _settingsWindow = [[NSWindow alloc]
+        initWithContentRect:contentRect
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    _settingsWindow.title = @"FocusVeil 设置";
+    _settingsWindow.releasedWhenClosed = NO;
+
+    NSView *contentView = [[NSView alloc] initWithFrame:contentRect];
+    _settingsWindow.contentView = contentView;
+
+    NSFont *sectionFont = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    NSFont *labelFont = [NSFont systemFontOfSize:13];
+    NSFont *smallFont = [NSFont systemFontOfSize:12];
+
+    NSTextField *focusSection = [self settingsLabelWithString:@"焦点保留"
+                                                        frame:NSMakeRect(24, 480, 160, 18)
+                                                         font:sectionFont];
+    [contentView addSubview:focusSection];
+
+    _rankedBrightnessButton = [[NSButton alloc] initWithFrame:NSMakeRect(24, 446, 160, 24)];
+    _rankedBrightnessButton.title = @"启用分级亮度";
+    [_rankedBrightnessButton setButtonType:NSButtonTypeSwitch];
+    _rankedBrightnessButton.target = self;
+    _rankedBrightnessButton.action = @selector(toggleRankedBrightness:);
+    [contentView addSubview:_rankedBrightnessButton];
+
+    NSTextField *highlightLabel = [self settingsLabelWithString:@"历史高亮窗口"
+                                                          frame:NSMakeRect(24, 410, 110, 20)
+                                                           font:labelFont];
+    [contentView addSubview:highlightLabel];
+
+    _highlightWindowCountPopUp = [[NSPopUpButton alloc]
+        initWithFrame:NSMakeRect(150, 405, 118, 28)
+            pullsDown:NO];
     for (
         NSInteger count = FVMinimumHighlightWindowCount;
         count <= FVMaximumHighlightWindowCount;
         count++
     ) {
         NSString *title = [NSString stringWithFormat:@"%ld 个窗口", (long)count];
-        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
-                                                      action:@selector(selectHighlightWindowCount:)
-                                               keyEquivalent:@""];
-        item.target = self;
+        [_highlightWindowCountPopUp addItemWithTitle:title];
+        NSMenuItem *item = [_highlightWindowCountPopUp
+            itemAtIndex:_highlightWindowCountPopUp.numberOfItems - 1];
         item.tag = count;
-        [submenu addItem:item];
     }
+    _highlightWindowCountPopUp.target = self;
+    _highlightWindowCountPopUp.action = @selector(highlightWindowCountDidChange:);
+    [contentView addSubview:_highlightWindowCountPopUp];
 
-    menuItem.submenu = submenu;
-    return menuItem;
-}
-
-- (NSMenuItem *)rankedBrightnessControlsMenuItem {
-    NSMenuItem *menuItem = [[NSMenuItem alloc] init];
-    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 286, 212)];
-
-    NSTextField *titleLabel = [NSTextField labelWithString:@"分级亮度"];
-    titleLabel.frame = NSMakeRect(16, 188, 120, 17);
-    titleLabel.font = [NSFont menuFontOfSize:13];
-
-    [container addSubview:titleLabel];
+    NSTextField *brightnessTitle = [self settingsLabelWithString:@"分级亮度"
+                                                           frame:NSMakeRect(24, 365, 160, 18)
+                                                            font:labelFont];
+    [contentView addSubview:brightnessTitle];
 
     for (
         NSInteger level = FVMinimumHighlightWindowCount;
         level <= FVMaximumHighlightWindowCount;
         level++
     ) {
-        CGFloat y = 188 - (CGFloat)level * 36;
+        CGFloat y = 326 - (CGFloat)(level - 1) * 36;
 
-        NSTextField *label = [NSTextField labelWithString:
-            [NSString stringWithFormat:@"第 %ld 级", (long)level]];
-        label.frame = NSMakeRect(16, y + 7, 58, 17);
-        label.font = [NSFont menuFontOfSize:12];
-
-        NSSlider *slider = [[NSSlider alloc] initWithFrame:NSMakeRect(76, y, 150, 26)];
+        NSTextField *label = [self settingsLabelWithString:
+            [NSString stringWithFormat:@"第 %ld 级", (long)level]
+                                                     frame:NSMakeRect(24, y + 5, 58, 18)
+                                                      font:smallFont];
+        NSSlider *slider = [[NSSlider alloc] initWithFrame:NSMakeRect(88, y, 270, 26)];
         slider.minValue = FVMinimumRankedBrightness;
         slider.maxValue = FVMaximumRankedBrightness;
         slider.continuous = YES;
@@ -1568,14 +1600,14 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
         slider.action = @selector(rankedBrightnessDidChange:);
         slider.tag = level;
 
-        NSTextField *valueLabel = [NSTextField labelWithString:@""];
-        valueLabel.frame = NSMakeRect(234, y + 7, 38, 17);
-        valueLabel.font = [NSFont menuFontOfSize:12];
+        NSTextField *valueLabel = [self settingsLabelWithString:@""
+                                                          frame:NSMakeRect(374, y + 5, 58, 18)
+                                                           font:smallFont];
         valueLabel.alignment = NSTextAlignmentRight;
 
-        [container addSubview:label];
-        [container addSubview:slider];
-        [container addSubview:valueLabel];
+        [contentView addSubview:label];
+        [contentView addSubview:slider];
+        [contentView addSubview:valueLabel];
         [_rankedBrightnessLabels addObject:label];
         [_rankedBrightnessSliders addObject:slider];
         [_rankedBrightnessValueLabels addObject:valueLabel];
@@ -1584,15 +1616,85 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     _resetRankedBrightnessButton = [NSButton buttonWithTitle:@"恢复默认"
                                                       target:self
                                                       action:@selector(resetRankedBrightness:)];
-    _resetRankedBrightnessButton.frame = NSMakeRect(16, 10, 96, 26);
+    _resetRankedBrightnessButton.frame = NSMakeRect(24, 178, 96, 28);
     _resetRankedBrightnessButton.bezelStyle = NSBezelStyleRounded;
-    [container addSubview:_resetRankedBrightnessButton];
+    [contentView addSubview:_resetRankedBrightnessButton];
 
-    menuItem.view = container;
-    return menuItem;
+    [contentView addSubview:[self settingsSeparatorWithY:154 width:contentWidth]];
+
+    NSTextField *systemSection = [self settingsLabelWithString:@"系统"
+                                                         frame:NSMakeRect(24, 124, 160, 18)
+                                                          font:sectionFont];
+    [contentView addSubview:systemSection];
+
+    NSTextField *permissionLabel = [self settingsLabelWithString:@"辅助功能权限"
+                                                           frame:NSMakeRect(24, 88, 100, 20)
+                                                            font:labelFont];
+    [contentView addSubview:permissionLabel];
+
+    _permissionStatusLabel = [self settingsLabelWithString:@""
+                                                     frame:NSMakeRect(136, 88, 170, 20)
+                                                      font:labelFont];
+    [contentView addSubview:_permissionStatusLabel];
+
+    _accessibilitySettingsButton = [NSButton buttonWithTitle:@"打开系统设置"
+                                                      target:self
+                                                      action:@selector(openAccessibilitySettings:)];
+    _accessibilitySettingsButton.frame = NSMakeRect(328, 82, 128, 28);
+    _accessibilitySettingsButton.bezelStyle = NSBezelStyleRounded;
+    [contentView addSubview:_accessibilitySettingsButton];
+
+    _launchAtLoginButton = [[NSButton alloc] initWithFrame:NSMakeRect(24, 50, 160, 24)];
+    _launchAtLoginButton.title = @"登录时启动";
+    [_launchAtLoginButton setButtonType:NSButtonTypeSwitch];
+    _launchAtLoginButton.target = self;
+    _launchAtLoginButton.action = @selector(toggleLaunchAtLogin:);
+    [contentView addSubview:_launchAtLoginButton];
+
+    _checkForUpdatesButton = [NSButton buttonWithTitle:@"检查更新"
+                                                target:self
+                                                action:@selector(checkForUpdatesFromSettings:)];
+    _checkForUpdatesButton.frame = NSMakeRect(24, 18, 96, 28);
+    _checkForUpdatesButton.bezelStyle = NSBezelStyleRounded;
+    [contentView addSubview:_checkForUpdatesButton];
+
+    NSButton *aboutButton = [NSButton buttonWithTitle:@"关于 FocusVeil"
+                                              target:self
+                                              action:@selector(showAbout:)];
+    aboutButton.frame = NSMakeRect(132, 18, 120, 28);
+    aboutButton.bezelStyle = NSBezelStyleRounded;
+    [contentView addSubview:aboutButton];
+}
+
+- (void)showSettings:(id)sender {
+    BOOL shouldCenter = _settingsWindow == nil;
+    [self configureSettingsWindowIfNeeded];
+    [self updateMenuState];
+    if (shouldCenter) {
+        [_settingsWindow center];
+    }
+    [_settingsWindow makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
 }
 
 - (void)menuWillOpen:(NSMenu *)menu {
+    if (!_statusMenuOpen) {
+        _statusMenuOpen = YES;
+        _wasInterfaceSuspendedBeforeStatusMenu =
+            _focusController.isInterfaceSuspended;
+    }
+    _focusController.interfaceSuspended = YES;
+    [self updateMenuState];
+}
+
+- (void)menuDidClose:(NSMenu *)menu {
+    if (!_statusMenuOpen) {
+        return;
+    }
+
+    _statusMenuOpen = NO;
+    _focusController.interfaceSuspended =
+        _wasInterfaceSuspendedBeforeStatusMenu;
     [self updateMenuState];
 }
 
@@ -1600,46 +1702,53 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     BOOL active = FVIsEnabled() && !_focusController.isPaused;
     _enabledItem.state = active ? NSControlStateValueOn : NSControlStateValueOff;
     _intensitySlider.doubleValue = FVDimmingAmount();
-    _rankedBrightnessItem.state = FVRankedBrightnessEnabled()
-        ? NSControlStateValueOn
-        : NSControlStateValueOff;
 
     NSInteger highlightWindowCount = FVHighlightWindowCount();
-    _highlightWindowCountItem.title = [NSString stringWithFormat:
-        @"历史高亮窗口：%ld",
-        (long)highlightWindowCount
-    ];
-    _highlightWindowCountItem.enabled = FVRankedBrightnessEnabled();
-    for (NSMenuItem *item in _highlightWindowCountItem.submenu.itemArray) {
-        item.state = item.tag == highlightWindowCount
+    if (_rankedBrightnessButton != nil) {
+        _rankedBrightnessButton.state = FVRankedBrightnessEnabled()
             ? NSControlStateValueOn
             : NSControlStateValueOff;
+    }
+    if (_highlightWindowCountPopUp != nil) {
+        [_highlightWindowCountPopUp selectItemWithTag:highlightWindowCount];
     }
     [self updateRankedBrightnessControlsWithCount:highlightWindowCount];
 
     BOOL trusted = _focusController.accessibilityTrusted;
-    _permissionItem.title = trusted
-        ? @"辅助功能权限已启用"
-        : @"打开辅助功能设置";
-    _permissionItem.state = trusted
-        ? NSControlStateValueOn
-        : NSControlStateValueOff;
-
-    if (@available(macOS 13.0, *)) {
-        _launchAtLoginItem.state =
-            SMAppService.mainAppService.status == SMAppServiceStatusEnabled
-            ? NSControlStateValueOn
-            : NSControlStateValueOff;
+    if (_permissionStatusLabel != nil) {
+        _permissionStatusLabel.stringValue = trusted ? @"已启用" : @"未启用";
+        _permissionStatusLabel.textColor = trusted
+            ? NSColor.labelColor
+            : NSColor.systemRedColor;
     }
 
-    _checkForUpdatesItem.title = @"检查更新";
-    _checkForUpdatesItem.enabled = _updaterController.updater.canCheckForUpdates;
+    if (_launchAtLoginButton != nil) {
+        if (@available(macOS 13.0, *)) {
+            _launchAtLoginButton.enabled = YES;
+            _launchAtLoginButton.state =
+                SMAppService.mainAppService.status == SMAppServiceStatusEnabled
+                ? NSControlStateValueOn
+                : NSControlStateValueOff;
+        } else {
+            _launchAtLoginButton.enabled = NO;
+            _launchAtLoginButton.state = NSControlStateValueOff;
+        }
+    }
+
+    if (_checkForUpdatesButton != nil) {
+        _checkForUpdatesButton.enabled =
+            _updaterController.updater.canCheckForUpdates;
+    }
 }
 
 - (void)updateRankedBrightnessControlsWithCount:(NSInteger)highlightWindowCount {
     BOOL controlsEnabled = FVRankedBrightnessEnabled();
-    _rankedBrightnessControlsItem.enabled = controlsEnabled;
-    _resetRankedBrightnessButton.enabled = controlsEnabled;
+    if (_highlightWindowCountPopUp != nil) {
+        _highlightWindowCountPopUp.enabled = controlsEnabled;
+    }
+    if (_resetRankedBrightnessButton != nil) {
+        _resetRankedBrightnessButton.enabled = controlsEnabled;
+    }
 
     for (NSUInteger index = 0; index < _rankedBrightnessSliders.count; index++) {
         NSInteger level = (NSInteger)index + 1;
@@ -1679,8 +1788,8 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
     [self updateMenuState];
 }
 
-- (void)selectHighlightWindowCount:(NSMenuItem *)sender {
-    [_focusController setHighlightWindowCount:sender.tag];
+- (void)highlightWindowCountDidChange:(NSPopUpButton *)sender {
+    [_focusController setHighlightWindowCount:sender.selectedItem.tag];
     [self updateMenuState];
 }
 
@@ -1716,6 +1825,11 @@ static BOOL FVIsFinderApplication(NSRunningApplication *application) {
         [self showAlertWithTitle:@"无法更改登录启动设置"
                          message:error.localizedDescription ?: @"系统未接受此项设置。"];
     }
+    [self updateMenuState];
+}
+
+- (void)checkForUpdatesFromSettings:(id)sender {
+    [_updaterController checkForUpdates:sender];
     [self updateMenuState];
 }
 
